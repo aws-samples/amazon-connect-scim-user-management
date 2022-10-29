@@ -1,11 +1,17 @@
-## My Project
+# Amazon Connect User Management Code Artifact
 
-TODO: Fill this README out!
+The repository contains the code artifact for the Amazon Connect User management solution APG pattern. The repository folder structure as follows:
 
-Be sure to:
+* ***cdk_source*** - The folder contains the CDK stack for deploying the solution.
 
-* Change the title in this README
-* Edit your repository description on GitHub
+## Solution Architecture
+
+------ architecture goes here ------
+
+## Authors
+
+* Jonathan Nguyen [tamg@amazon.com] - Sr. Security consultant
+* Gopinath Jagadesan [gopinjag@amazon.com] - Cloud Infrastructure Architect
 
 ## Security
 
@@ -14,4 +20,3 @@ See [CONTRIBUTING](CONTRIBUTING.md#security-issue-notifications) for more inform
 ## License
 
 This library is licensed under the MIT-0 License. See the LICENSE file.
-
