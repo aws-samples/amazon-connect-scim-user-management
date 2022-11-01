@@ -8,13 +8,15 @@ The solution is recommened to be used in conjunction with an Amazon Connect inst
 
 - Mechanism to create security profiles within an Amazon Connect Instance.
 
-- Application with an identity provider (Okta/Azure AD) to create a SCIM application. 
+- SCIM application with an identity provider (IdP) (e.g. Okta/Azure AD). 
 
 - Credentials for an IAM principal to provision resources in the same AWS account where the Amazon Connect instance is deployed.
 
 ## Solution Architecture
 
 (1) API gateway has a configured to manage SCIM requests from an IdP.
+
+(1) Custom resource Lambda function to generate an API key and store in AWS Systems Manager parameter store. This API key will be used for the IdP SCIM application to authenticate to the API gateway.
 
 (1) Authorizer Lambda function is primarily used to authenticate requests to the API gateway
 
