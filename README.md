@@ -1,4 +1,4 @@
-# Amazon Connect SCIM User Provisioning Management
+# Amazon Connect SCIM User Management
 
 The solution is recommened to be used in conjunction with an Amazon Connect instance deployed with SAML authentication to manage users and security profiles that is integrated with an identity provider’s System for Cross-domain Identity Management (SCIM) application. We will also walk through additional guardrails you need to implement to ensure this solution controls CRUD of users and associated permissions within the Amazon Connect instance.
 
