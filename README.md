@@ -1,4 +1,4 @@
-# Amazon Connect User Management Code Artifact
+# Amazon Connect SCIM User Provisioning Management
 
 The solution is recommened to be used in conjunction with an Amazon Connect instance deployed with SAML authentication to manage users and security profiles that is integrated with an identity provider’s System for Cross-domain Identity Management (SCIM) application. We will also walk through additional guardrails you need to implement to ensure this solution controls CRUD of users and associated permissions within the Amazon Connect instance.
 
@@ -6,7 +6,7 @@ The solution is recommened to be used in conjunction with an Amazon Connect inst
 
 - Amazon Connect instance is deployed with SAML identity management.
 
-- Mechanism to create security profiles within an Amazon Connect Instance.
+- Mechanism to create security profiles within an Amazon Connect Instance. For example, deploying security profiles using a CI/CD pipeline.
 
 - SCIM application with an identity provider (IdP) (e.g. Okta/Azure AD). 
 
@@ -14,13 +14,17 @@ The solution is recommened to be used in conjunction with an Amazon Connect inst
 
 ## Solution Architecture
 
-(1) API gateway has a configured to manage SCIM requests from an IdP.
+1. Rest API gateway has a configured to manage SCIM requests from an IdP.
+- * A resource {Users+}
+- * A method for the {Users+} resource is created with a ‘POST"‘ for an AWS proxy to the SCIM user management Lambda function with a Lambda authorizer configured
+- * A stage for ‘dev’ is configured to deploy the API gateway
+- * A usage plan is created for the sage and associated configurations for throttling
 
-(1) Custom resource Lambda function to generate an API key and store in AWS Systems Manager parameter store. This API key will be used for the IdP SCIM application to authenticate to the API gateway.
+2. API Key Lambda function - during deployment, a custom resource provisions an API key required for your IdP and stores the value in Systems Manager. This is primarily to ensure the IdP application is authenticated to invoke the API Gateway.
 
-(1) Authorizer Lambda function is primarily used to authenticate requests to the API gateway
+3. Authorizer Lambda function is primarily used to process bearer tokens, such as (JSON Web Token) JWT or Oauth token, to authorize requests to the API gateway
 
-(1) SCIM user management Lambda function handles the SCIM requests coming from the IdP to Create, Read, Update, Delete users and security profile associations.
+4. SCIM user management Lambda function handles the SCIM requests coming from the IdP to Create, Read, Update, Delete users and security profile associations.
 
 ## Authors
 
