@@ -58,7 +58,12 @@ def lambda_handler(event, context):
             logger.info(f"Generating api key of length {key_length}")
             temp = random.sample(all,key_length)
             temppass = ''.join(temp)
-            put_ssm_key = ssm_client.put_parameter(Name = PARAMETER_NAME, Type= 'StringList', Value = f'Bearer {temppass},{temppass}')
+            put_ssm_key = ssm_client.put_parameter(
+                Name = PARAMETER_NAME, 
+                Type= 'String', 
+                Value = temppass,
+                Overwrite = True
+            )
             response = 'SUCCESS'
         except Exception as e:
             logger.info(f"Creating Service control policy failed because of {e}")

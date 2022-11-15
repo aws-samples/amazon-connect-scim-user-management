@@ -1,4 +1,4 @@
-import { CustomResource,Stack, StackProps, Duration, CfnParameter } from 'aws-cdk-lib';
+import { CustomResource,Stack, StackProps, Duration, CfnParameter, CfnOutput } from 'aws-cdk-lib';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import { Construct } from 'constructs';
 import { Function, Runtime, Code } from 'aws-cdk-lib/aws-lambda';
@@ -9,6 +9,7 @@ import { ServicePrincipal } from 'aws-cdk-lib/aws-iam';
 import { DeadLetterQueue, Queue } from 'aws-cdk-lib/aws-sqs';
 import { LogGroup, RetentionDays } from 'aws-cdk-lib/aws-logs';
 import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
+import { ParameterTier, StringParameter } from 'aws-cdk-lib/aws-ssm';
 
 export class ConnnectUserManagement extends Stack {
   constructor(scope: Construct, id: string, props?: StackProps) {
@@ -27,10 +28,10 @@ export class ConnnectUserManagement extends Stack {
       default: 32
     });
 
-    const api_key_name = new CfnParameter(this, 'api_key_name', {
+    const api_key_name = new StringParameter(this, 'security_demo_parameter', {
+      parameterName: '/connect/scim-integration/api-token',
+      stringValue: 'default',
       description: 'The SSM parameter name for the API gateway API key.',
-      type: 'String',
-      default: '/SCIMIntegration/ApiKey'
     });
 
     // IDP SCIM provisioner on Amazon Connect instance Lambda function
@@ -193,7 +194,7 @@ export class ConnnectUserManagement extends Stack {
       memorySize: 512,
       role: api_key_generation_role,
       environment:{
-        PARAMETER_NAME: api_key_name.valueAsString
+        PARAMETER_NAME: api_key_name.parameterName
       },
     });
 
@@ -204,11 +205,11 @@ export class ConnnectUserManagement extends Stack {
           effect: iam.Effect.ALLOW,
           actions: [
             "ssm:PutParameter",
-            "ssm:DeleteParameter"
+            "ssm:DeleteParameter",
+            "ssm:DeleteParameters"
           ],
           resources: [
-            "*",
-            'arn:aws:ssm:' + this.region + ':' + this.account + ':parameter/' + api_key_name.valueAsString
+            api_key_name.parameterArn
           ]   
         })
       ],
@@ -379,6 +380,11 @@ export class ConnnectUserManagement extends Stack {
       principal: new ServicePrincipal('apigateway.amazonaws.com'),
       action: 'lambda:InvokeFunction',
       sourceArn: 'arn:' + this.partition + ':execute-api:' + this.region + ':' + this.account + ':' + scim_api_gw.restApiId + '/authorizers/' + scim_api_authorizer.authorizerId + '/*/*',
+    })
+
+    new CfnOutput(this,'CFNOutPut', {
+      description:'Base URL for the SCIM 2.0 Test App (Header Auth) credentials to authorize provisioning users from the identity provider and the Connect instance',
+      value: 'https://' + scim_api_gw.restApiId + '.execute-api.' + this.region + '.' + this.urlSuffix + '/' + scim_api_stage.stageName + '/Users?filter=userName%20eq%20%22test.user'
     })
 
   }
