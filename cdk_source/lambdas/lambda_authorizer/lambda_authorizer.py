@@ -1,12 +1,12 @@
 from __future__ import print_function
-
+import os
 import re
 import boto3
 
+PARAMETER_NAME = os.getenv("PARAMETER_NAME")
 
 def lambda_handler(event, context):
     print(event)
-    print("Client token: " + event['authorizationToken'])
     print("Method ARN: " + event['methodArn'])
 
     principalId = 'user:test'
@@ -25,7 +25,7 @@ def lambda_handler(event, context):
     
     # ** Read API key/ Secret key from Parameter store
     ssm = boto3.client('ssm')
-    myParameter = ssm.get_parameter(Name='/SCIMIntegration/ApiKey', WithDecryption=False)
+    myParameter = ssm.get_parameter(Name=PARAMETER_NAME, WithDecryption=False)
     if(event['authorizationToken'] == ((myParameter['Parameter']['Value']).split(','))[0]):
         policy.allowAllMethods()
     elif (event['authorizationToken'] == ((myParameter['Parameter']['Value']).split(','))[1]):
