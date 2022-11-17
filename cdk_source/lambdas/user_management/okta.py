@@ -18,7 +18,7 @@ CONNECT_CLIENT = boto3.client('connect')
 
 # Environment variaable
 INSTANCE_ID = os.getenv("INSTANCE_ID")
-ROUTING_PROFILE = os.getenv('ROUTING_PROFILE')
+DEFAULT_ROUTING_PROFILE = os.getenv('DEFAULT_ROUTING_PROFILE')
 
 # The fuction to get connect user information
 
@@ -53,9 +53,14 @@ def create_connect_user(body):
         first_name = user_info['name']['givenName']
         last_name = user_info['name']['familyName']
         security_profile = user_info["entitlements"]
+        if "roles" in user_info:
+            routing_profile_name = ''.join(user_info["roles"])
+        else:
+            routing_profile_name = DEFAULT_ROUTING_PROFILE
         sg_id_list = get_sg_id(security_profile)
-        routing_id = get_routing_id(ROUTING_PROFILE)
-        LOGGER.info("The Security profile %s attached to user %s",sg_id_list, user_name)    # noqa: E501
+        routing_id = get_routing_id(routing_profile_name)
+        LOGGER.info("The security profile %s id: %s will be assigned to user %s", security_profile, sg_id_list, user_name)    # noqa: E501
+        LOGGER.info("The routing profile ['%s'] id: %s will be assigned to user %s", routing_profile_name, routing_id, user_name)    # noqa: E501
         output = CONNECT_CLIENT.create_user(
             Username=user_name,
             IdentityInfo={
@@ -85,9 +90,9 @@ def get_sg_id(security_profile):
     """To get security profile id."""
     try:
         sg_id = []
-        security_list = CONNECT_CLIENT.list_security_profiles(InstanceId=INSTANCE_ID)
+        security_profile_list = CONNECT_CLIENT.list_security_profiles(InstanceId=INSTANCE_ID)
         for each_security_profile in security_profile:
-            for profile in security_list['SecurityProfileSummaryList']:
+            for profile in security_profile_list['SecurityProfileSummaryList']:
                 if each_security_profile == profile['Name']:
                     sg_id.append(profile['Id'])
         return sg_id
@@ -99,13 +104,13 @@ def get_sg_id(security_profile):
 # The fuction to get connect Routing profile Id.
 
 
-def get_routing_id(routing_profile):
+def get_routing_id(routing_profile_name):
     """To get Routing profile id."""
     try:
         routing_id = ''
-        routing_profile_id = CONNECT_CLIENT.list_routing_profiles(InstanceId=INSTANCE_ID)
-        for profile in routing_profile_id['RoutingProfileSummaryList']:
-            if routing_profile == profile['Name']:
+        routing_profile_list = CONNECT_CLIENT.list_routing_profiles(InstanceId=INSTANCE_ID)
+        for profile in routing_profile_list['RoutingProfileSummaryList']:
+            if routing_profile_name == profile['Name']:
                 routing_id = profile['Id']
         return routing_id
     except botocore.exceptions.ClientError as error:

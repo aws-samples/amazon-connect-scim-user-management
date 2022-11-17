@@ -4,12 +4,10 @@ import { Construct } from 'constructs';
 import { Function, Runtime, Code } from 'aws-cdk-lib/aws-lambda';
 import { join } from 'path';
 import * as customresources from 'aws-cdk-lib/custom-resources';
-import {  AwsIntegration, RestApi, EndpointType, Integration, IntegrationType, TokenAuthorizer, Deployment, Period, Stage, PassthroughBehavior, MethodLoggingLevel } from 'aws-cdk-lib/aws-apigateway';
+import { RestApi, EndpointType, Integration, IntegrationType, TokenAuthorizer, Deployment, Period, Stage, MethodLoggingLevel } from 'aws-cdk-lib/aws-apigateway';
 import { ServicePrincipal } from 'aws-cdk-lib/aws-iam';
-import { DeadLetterQueue, Queue } from 'aws-cdk-lib/aws-sqs';
-import { LogGroup, RetentionDays } from 'aws-cdk-lib/aws-logs';
-import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
-import { ParameterTier, StringParameter } from 'aws-cdk-lib/aws-ssm';
+import { RetentionDays } from 'aws-cdk-lib/aws-logs';
+import { StringParameter } from 'aws-cdk-lib/aws-ssm';
 
 export class ConnnectUserManagement extends Stack {
   constructor(scope: Construct, id: string, props?: StackProps) {
@@ -55,7 +53,7 @@ export class ConnnectUserManagement extends Stack {
       role: SCIM_provisioning_lambda_role,
       environment:{
         INSTANCE_ID: connect_instance_id.valueAsString,
-        ROUTING_PROFILE: 'Basic Routing Profile'
+        DEFAULT_ROUTING_PROFILE: 'Basic Routing Profile'
       },
     });
 
@@ -385,7 +383,7 @@ export class ConnnectUserManagement extends Stack {
 
     new CfnOutput(this,'Okta-API-Base-URL', {
       description:'Base URL for the SCIM 2.0 Test App (Header Auth) credentials to authorize provisioning users from the identity provider and the Connect instance',
-      value: 'https://' + scim_api_gw.restApiId + '.execute-api.' + this.region + '.' + this.urlSuffix + '/' + scim_api_stage.stageName + '/Users?filter=userName%20eq%20%22test.user'
+      value: 'https://' + scim_api_gw.restApiId + '.execute-api.' + this.region + '.' + this.urlSuffix + '/' + scim_api_stage.stageName + '/Users?filter=userName%20eq%20%22test.user%22'
     })
 
     new CfnOutput(this,'Okta-API-Token-SSM-Parameter', {
