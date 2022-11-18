@@ -150,7 +150,7 @@ After building your TypeScript code, you will be able to run the CDK toolkits co
 
 ## Authors
 
-* Jonathan Nguyen [tamg@amazon.com] - Sr. Security consultant
+* Jonathan Nguyen [tamg@amazon.com] - Sr. Security Consultant
 * Gopinath Jagadesan [gopinjag@amazon.com] - Cloud Infrastructure Architect
 
 ## Security
