@@ -50,6 +50,7 @@ export class ConnnectUserManagement extends Stack {
       description: 'AWS Lambda function to provision Amazon Connect users via IdP SCIM integration.',
       timeout: Duration.seconds(900),
       memorySize: 512,
+      functionName: 'connect-scim-user-management',
       role: SCIM_provisioning_lambda_role,
       environment:{
         INSTANCE_ID: connect_instance_id.valueAsString,
@@ -107,6 +108,7 @@ export class ConnnectUserManagement extends Stack {
       handler: 'lambda_authorizer.lambda_handler',
       description: 'AWS Lambda authorizer to check if requester is able to invoke' + SCIM_provisioning_lambda_function.functionArn + '.',
       timeout: Duration.seconds(900),
+      functionName: 'lambda-authorizer-scim-api-gw',
       memorySize: 512,
       role: lambda_authorizer_role,
       environment:{
@@ -190,6 +192,7 @@ export class ConnnectUserManagement extends Stack {
       handler: 'custom_resource.lambda_handler',
       description: 'Generates an API key to use for the Connect SCIM user management integration.',
       timeout: Duration.seconds(30),
+      functionName: 'api-key-custom-resource-lambda-authorizer',
       memorySize: 512,
       role: api_key_generation_role,
       environment:{

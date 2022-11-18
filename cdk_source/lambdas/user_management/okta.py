@@ -25,27 +25,29 @@ DEFAULT_ROUTING_PROFILE = os.getenv('DEFAULT_ROUTING_PROFILE')
 
 def get_connect_user(userid):
     """To get Connect user info."""
-    user_info = {}
+    user_found = {}
     user_list = []
     try:
-        get_users = CONNECT_CLIENT.list_users(
+        LOGGER.info("Looking for %s in Connect instance %s...", userid, INSTANCE_ID)    # noqa: E501
+        get_user_list = CONNECT_CLIENT.list_users(
             InstanceId=INSTANCE_ID,
             MaxResults=1000
         )
-        user_list.extend(get_users['UserSummaryList'])
-        for users in user_list['UserSummaryList']:
+        user_list.extend(get_user_list['UserSummaryList'])
+        for users in user_list:
             if userid == users['Id']:
-                user_info = {
+                user_found = {
                     "Username" : users['Username'],
                     "Id" : users['Id']
                 }
-        return user_info
+        return user_found
     except botocore.exceptions.ClientError as error:
         LOGGER.error("Connect User Management Failure - Boto3 client error in UserManagementScimLambda while getting Connect user due to %s", error.response['Error']['Code'])     # noqa: E501
         raise error
 
 
 # The fuction to Create connect user based on SCIM payload
+
 
 def create_connect_user(body):
     """To create connect user based on scim payload."""
@@ -62,7 +64,7 @@ def create_connect_user(body):
         sg_id_list = get_sg_id(security_profile)
         routing_id = get_routing_id(routing_profile_name)
         LOGGER.info("The security profile %s id: %s will be assigned to user %s", security_profile, sg_id_list, user_name)    # noqa: E501
-        LOGGER.info("The routing profile ['%s'] id: %s will be assigned to user %s", routing_profile_name, routing_id, user_name)    # noqa: E501
+        LOGGER.info("The routing profile ['%s'] id: ['%s'] will be assigned to user %s", routing_profile_name, routing_id, user_name)    # noqa: E501
         output = CONNECT_CLIENT.create_user(
             Username=user_name,
             IdentityInfo={
@@ -151,8 +153,7 @@ def build_scim_user(user) :
 
     try:
         user_list = CONNECT_CLIENT.list_users(
-            InstanceId=INSTANCE_ID,
-            MaxResults=1000
+            InstanceId=INSTANCE_ID
         )
         userid = user["Id"]
         for users in user_list['UserSummaryList']:
@@ -269,9 +270,9 @@ def lambda_handler(event, context):
             uid = user_list[-2]
         LOGGER.info("The user in the request is %s",uid)
         if uid != "":
-            user_info = get_connect_user(uid)
-            if user_info:
-                scim_user = build_scim_user(user_info)
+            user = get_connect_user(uid)
+            if user:
+                scim_user = build_scim_user(user)
                 LOGGER.info("Method:GET for existing user - SCIM User Response ==========> %s",json.dumps(scim_user))    # noqa: E501
             else:
                 scim_user = user_not_found_response()
