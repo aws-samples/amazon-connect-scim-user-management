@@ -26,41 +26,29 @@ DEFAULT_ROUTING_PROFILE = os.getenv('DEFAULT_ROUTING_PROFILE')
 def get_connect_user(userid):
     """To get Connect user info."""
     user_found = {}
-    user_list = []
-    next_token_present=True
     try:
         LOGGER.info("Looking for %s in Connect instance %s...", userid, INSTANCE_ID)    # noqa: E501
-        get_user_list = CONNECT_CLIENT.list_users(
+        paginator=CONNECT_CLIENT.get_paginator('list_users')
+        paginated_user_list=paginator.paginate(
             InstanceId=INSTANCE_ID,
-            MaxResults=1
+            PaginationConfig={
+            }
         )
-        user_list.extend(get_user_list['UserSummaryList'])
-        while next_token_present:
-            get_more_users = CONNECT_CLIENT.list_users(
-            InstanceId=INSTANCE_ID,
-            NextToken=get_user_list['NextToken'],
-            MaxResults=1
-            )
-            user_list.extend(get_more_users['UserSummaryList'])
-            if 'NextToken' in get_more_users:
-                next_token_present=True
-            else:
-                next_token_present=False
-        for users in user_list:
-            if userid == users['Id']:
-                user_found = {
-                    "Username" : users['Username'],
-                    "Id" : users['Id']
-                }
-                LOGGER.info("User %s id: ['%s'] in Connect instance %s...", userid, user_found['Id'], INSTANCE_ID)    # noqa: E501
-        return user_list, user_found
+        for page in paginated_user_list:
+            for users in page['UserSummaryList']:
+                if userid == users['Id']:
+                    user_found = {
+                        "Username" : users['Username'],
+                        "Id" : users['Id']
+                    }
+                    LOGGER.info("User %s id: ['%s'] in Connect instance %s...", userid, user_found['Id'], INSTANCE_ID)    # noqa: E501
+        return user_found
     except botocore.exceptions.ClientError as error:
         LOGGER.error("Connect User Management Failure - Boto3 client error in UserManagementScimLambda while getting Connect user due to %s", error.response['Error']['Code'])     # noqa: E501
         raise error
 
 
 # The fuction to Create connect user based on SCIM payload
-
 
 def create_connect_user(body):
     """To create connect user based on scim payload."""
@@ -145,7 +133,7 @@ def get_routing_id(routing_profile_name):
 
 
 def user_not_found_response():
-    """To send scim response when user not found."""
+    """To send SCIM response when a user is not found on the instance."""
     return_response = {
         "id" : "urn:ietf:params:scim:api:messages:2.0:ListResponse",
         "schemas": ["urn:ietf:params:scim:api:messages:2.0:ListResponse"],
@@ -160,14 +148,14 @@ def user_not_found_response():
 
 
 def build_scim_user(user) :
-    """To send scim response when user exist."""
+    """To send SCIM response when a user exists on the instance."""
     LOGGER.info("The Existing user to build SCIM response %s",user)
     sg_entitlement = []
-    userid = user["Id"]
     try:
         user_list = CONNECT_CLIENT.list_users(
             InstanceId=INSTANCE_ID
         )
+        userid = user["Id"]
         for users in user_list['UserSummaryList']:
             if userid == users['Id']:
                 get_user_info = CONNECT_CLIENT.describe_user(UserId=userid,
