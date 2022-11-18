@@ -5,7 +5,7 @@ The solution is recommened to be used in conjunction with an Amazon Connect inst
 ## Prequisites 
 1. Create an Amazon Connect instance - You can follow the steps outlined in the [Connect administrator guide](https://docs.aws.amazon.com/connect/latest/adminguide/amazon-connect-instances.html) using *SAML 2.0-based authentication* for identity authentication options and [configure SAML with IAM](https://docs.aws.amazon.com/connect/latest/adminguide/configure-saml.html).
 2. Setup IdP instance:
-- * For Okta, you can create an [Okta demo instance](https://developer.okta.com/signup/) for free. Otherwise, you can use an existing Okta instance you have access to and can create Okta applications.
+  * For Okta, you can create an [Okta demo instance](https://developer.okta.com/signup/) for free. Otherwise, you can use an existing Okta instance you have access to and can create Okta applications.
 3. Setup SAML federation for your Amazon Connect instance by following the (Amazon Connect SSO Setup Workshop)[https://catalog.us-east-1.prod.workshops.aws/workshops/33e6d0e7-f927-4531-abb1-f28a86ba0872/en-US].
 4. Create Amazon Connect security and routing profiles - the solution deployed relies on Amazon Connect security profiles that exist. For demo or PoC purposes, you can use existing security and routing profiles or create a security profile in the AWS console using the steps outlined within the (Connect administrator guide)[https://docs.aws.amazon.com/connect/latest/adminguide/create-security-profile.html]. If using in an Production environment, make sure security and routing profiles are provisioned with appropriate permissions using authorized IAM service principals.
 5. Credentials for an IAM principal to deploy resources listed in the Solution Architecture section in the same AWS account where the Amazon Connect instance is deployed.
@@ -15,10 +15,10 @@ The solution is recommened to be used in conjunction with an Amazon Connect inst
 ![connect_scim_architecture](/scim_architecture_diagram.png)
 
 1. *SCIM Rest API* is an API Gateway to manage SCIM requests from an IdP application to the *SCIM user provisioning* Lambda function .
-- * A resource {Users+}
-- * A method for the {Users+} resource is created with a ‘POST"‘ for an AWS proxy to the SCIM user management Lambda function with a Lambda authorizer configured
-- * A stage for ‘dev’ is configured to deploy the API gateway
-- * A usage plan is created for the sage and associated configurations for throttling
+  * A resource {Users+}
+  * A method for the {Users+} resource is created with a ‘POST"‘ for an AWS proxy to the SCIM user management Lambda function with a Lambda authorizer configured
+  * A stage for ‘dev’ is configured to deploy the API gateway
+  * A usage plan is created for the sage and associated configurations for throttling
 
 2. *API token generation* Lambda function - during deployment, a custom resource creates an API Token required to configure your IdP’s API connection and stores the value in a Systems Manager parameter. This is to restrict authorized entities, such as the IdP application, is authenticated to invoke the API Gateway. 
 
@@ -68,60 +68,60 @@ Once the CDK application has successfully deployed, you can configure the SCIM a
 1. Once your SCIM application is created , select the **Provisioning** tab
 2. Select **Configure API Integration** and select **Enable API integration**
 3. Enter in the following information for the API integration:
-- * Base URL: Enter in the API Gateway URL output **OktaAPIBaseURL** from the CloudFormation template (e.g. https://<API_GATEWAY_ID>.execute-api.<REGION>.amazonaws.com/dev/Users?filter=userName%20eq%20%22test.user)
-- * API Token: Enter in the bearer token value found in the AWS Systems Manager parameter ARN listed in **OktaAPITokenSSMParameter**. The bearer token will be a 32 alphanumeric value (e.g. 123abc456def789ghi101jklexamples)
+  * Base URL: Enter in the API Gateway URL output **OktaAPIBaseURL** from the CloudFormation template (e.g. https://<API_GATEWAY_ID>.execute-api.<REGION>.amazonaws.com/dev/Users?filter=userName%20eq%20%22test.user)
+  * API Token: Enter in the bearer token value found in the AWS Systems Manager parameter ARN listed in **OktaAPITokenSSMParameter**. The bearer token will be a 32 alphanumeric value (e.g. 123abc456def789ghi101jklexamples)
 4. Once the information is entered, select **Test API Credentials**
-- * If successful, you will see the message, “<SCIM application name> was verified successfully!”. Select **Save**
-- * If unsuccessful, the error is most likely a result of an incorrectly entered Base URL and/or API Token. To resolve, look at the CloudWatch logs for the API gateway and lambda authorizer function. Alternatively, the error could be incorrect parameter (e.g. invalid Connect instance-id) or IAM permissions. To resolve, look at the CloudWatch logs for the lambda SCIM provisioner.
+  * If successful, you will see the message, “<SCIM application name> was verified successfully!”. Select **Save**
+  * If unsuccessful, the error is most likely a result of an incorrectly entered Base URL and/or API Token. To resolve, look at the CloudWatch logs for the API gateway and lambda authorizer function. Alternatively, the error could be incorrect parameter (e.g. invalid Connect instance-id) or IAM permissions. To resolve, look at the CloudWatch logs for the lambda SCIM provisioner.
 5. Additional Settings for **To App**, and **To Okta** should appear if the provisioning integration is successful
 6. Select **To App**, and for the *Provisioning to App* settings, select **Edit**
-- * Select *Enable* for the following settings:
-- - * Create Users
-- - * Update User Attributes
-- - * Deactivate Users
-- * Leave the *Sync Password* setting disabled
-- * Select **Save**
+  * Select *Enable* for the following settings:
+    * Create Users
+    * Update User Attributes
+    * Deactivate Users
+  * Leave the *Sync Password* setting disabled
+  * Select **Save**
 7. Under the *<SCIM application name> Attribute Mappings*, select **Show Unmapped Attributes**
 8. Edit the following unmapped attributes:
-- * **entitlements**
-- - * Select **Same value for all users**
-- - * Select **Add Another** and enter in “Agent”
-- - - * Note: Note: Since this security profile will get assigned to all users managed by the SCIM application, you should use an existing security profile with no permissions assigned. To add security profiles, add additional entitlements at the Okta group level which will add additional security profiles to each user.
-- - * Select **Create and update**
-- - * Select **Save**
-- * **roles**
-- - * Select **Same value for all users**
-- - * Select **Add Another** and enter in Basic Routing Profile
-- - * Select **Create**
-- - * Select **Save**
+  * **entitlements**
+    * Select **Same value for all users**
+    * Select **Add Another** and enter in “Agent”
+      * Note: Note: Since this security profile will get assigned to all users managed by the SCIM application, you should use an existing security profile with no permissions assigned. To add security profiles, add additional entitlements at the Okta group level which will add additional security profiles to each user.
+    * Select **Create and update**
+    * Select **Save**
+  * **roles**
+    * Select **Same value for all users**
+    * Select **Add Another** and enter in Basic Routing Profile
+    * Select **Create**
+    * Select **Save**
 9. Under the *<SCIM application name> Attribute Mappings*, select **Go to Profile Editor**
-- * Edit the **entitlements** attribute
-- - * For *Group Priority*, select **Combine values across groups**
-- - * For *Attribute required*, select **Yes**
-- - * Select **Save Attribute**
-- * Note: You do not need to do this for the **roles** attribute.
+  * Edit the **entitlements** attribute
+    * For *Group Priority*, select **Combine values across groups**
+    * For *Attribute required*, select **Yes**
+    * Select **Save Attribute**
+  * Note: You do not need to do this for the **roles** attribute.
 
 ### Okta Group Provisioning
 Once the SCIM application is created, you can create/add Okta groups to manage users and assigning security profiles to the Connect instance. If you have existing Okta groups and associated users, the step to create a new Okta group and add user(s) can be skipped.
 1. [Create a groups in Okta](https://help.okta.com/asa/en-us/Content/Topics/Adv_Server_Access/docs/setup/create-a-group.htm)
-- * In your Okta instance, on the left-hand navigation select **Groups**
-- * Enter in a *Name* and *Description* for the group and select **Save**
+  * In your Okta instance, on the left-hand navigation select **Groups**
+  * Enter in a *Name* and *Description* for the group and select **Save**
 2. [Add user(s) to a group](https://help.okta.com/asa/en-us/Content/Topics/Adv_Server_Access/docs/group-add-user.htm)
-- * Select the Group you want to add users to and select **Assign people**
-- * For each user(s) you want to add select the **+** in that user’s row
-- - * Note: All users in this group will have a user created within the Amazon Connect instance. Depending on the entitlements added, those users will have those specific permissions within the Connect instance.
+  * Select the Group you want to add users to and select **Assign people**
+  * For each user(s) you want to add select the **+** in that user’s row
+    * Note: All users in this group will have a user created within the Amazon Connect instance. Depending on the entitlements added, those users will have those specific permissions within the Connect instance.
 3. Select the SCIM application you want to add a Group to and navigate to the **Assignments**
 4. Select **Assign** and select **Assign to Groups**
-- * Although there are multiple attributes to enter, it is important to enter in an entitlements value for the SCIM application to send the appropriate SCIM payload to the API gateway to manage users in Connect:
-- - * **entitlements**
-- - - * Select **Add Another**
-- - - * Enter in the [Amazon Connect security profile name](https://docs.aws.amazon.com/connect/latest/adminguide/connect-security-profiles.html) you want all users in the Okta group to be assigned.
-- - - - * Note: If you leave this blank, the **Agent** security profile (or whichever security profile value is assigned within the SCIM application) will be assigned to each user in this Group
-- - * **roles**
-- - - * Select **Add Another**
-- - - * Enter in the [Amazon Connect routing profile name](https://docs.aws.amazon.com/connect/latest/adminguide/concepts-routing.html) you want all users in the Okta group to be assigned.
-- - - - * Note: If you leave this blank, the **Basic routing profile** routing profile (or whichever security profile value is assigned within the SCIM application) will be assigned to each user in this Group
-- - - - * The SCIM application has the **Basic routing profile** to be a default value assigned to each user in this Group. That default value for the routing profile can be updated by changing the value in the Lambda function’s environment variable **ROUTING_PROFILE**. You must assign a default routing profile to create Connect users. Once users are created, you should manage routing profiles outside of Okta as agents can be moved or assigned to different routing profiles as needed during a shift.
+  * Although there are multiple attributes to enter, it is important to enter in an entitlements value for the SCIM application to send the appropriate SCIM payload to the API gateway to manage users in Connect:
+    * **entitlements**
+      * Select **Add Another**
+      * Enter in the [Amazon Connect security profile name](https://docs.aws.amazon.com/connect/latest/adminguide/connect-security-profiles.html) you want all users in the Okta group to be assigned.
+        * Note: If you leave this blank, the **Agent** security profile (or whichever security profile value is assigned within the SCIM application) will be assigned to each user in this Group
+    * **roles**
+      * Select **Add Another**
+      * Enter in the [Amazon Connect routing profile name](https://docs.aws.amazon.com/connect/latest/adminguide/concepts-routing.html) you want all users in the Okta group to be assigned.
+        * Note: If you leave this blank, the **Basic routing profile** routing profile (or whichever security profile value is assigned within the SCIM application) will be assigned to each user in this Group
+        * The SCIM application has the **Basic routing profile** to be a default value assigned to each user in this Group. That default value for the routing profile can be updated by changing the value in the Lambda function’s environment variable **ROUTING_PROFILE**. You must assign a default routing profile to create Connect users. Once users are created, you should manage routing profiles outside of Okta as agents can be moved or assigned to different routing profiles as needed during a shift.
 
 ### Validate Okta SCIM application 
 1. Add or Remove a user in the Okta group assigned to the SCIM application
