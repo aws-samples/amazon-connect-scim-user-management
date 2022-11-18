@@ -28,7 +28,8 @@ def get_connect_user(userid):
     user_found = {}
     try:
         user_list = CONNECT_CLIENT.list_users(
-            InstanceId=INSTANCE_ID
+            InstanceId=INSTANCE_ID,
+            MaxResults=1000
         )
         for users in user_list['UserSummaryList']:
             if userid == users['Id']:
@@ -43,7 +44,6 @@ def get_connect_user(userid):
 
 
 # The fuction to Create connect user based on SCIM payload
-
 
 def create_connect_user(body):
     """To create connect user based on scim payload."""
@@ -90,7 +90,10 @@ def get_sg_id(security_profile):
     """To get security profile id."""
     try:
         sg_id = []
-        security_profile_list = CONNECT_CLIENT.list_security_profiles(InstanceId=INSTANCE_ID)
+        security_profile_list = CONNECT_CLIENT.list_security_profiles(
+            InstanceId=INSTANCE_ID,
+            MaxResults=1000
+        )
         for each_security_profile in security_profile:
             for profile in security_profile_list['SecurityProfileSummaryList']:
                 if each_security_profile == profile['Name']:
@@ -108,7 +111,10 @@ def get_routing_id(routing_profile_name):
     """To get Routing profile id."""
     try:
         routing_id = ''
-        routing_profile_list = CONNECT_CLIENT.list_routing_profiles(InstanceId=INSTANCE_ID)
+        routing_profile_list = CONNECT_CLIENT.list_routing_profiles(
+            InstanceId=INSTANCE_ID,
+            MaxResults=1000
+        )
         for profile in routing_profile_list['RoutingProfileSummaryList']:
             if routing_profile_name == profile['Name']:
                 routing_id = profile['Id']
@@ -203,7 +209,8 @@ def update_connect_user(userid, body):
 
     try:
         user_list = CONNECT_CLIENT.list_users(
-            InstanceId=INSTANCE_ID
+            InstanceId=INSTANCE_ID,
+            MaxResults=1000
         )
         for users in user_list['UserSummaryList']:
             if userid == users['Id']:
