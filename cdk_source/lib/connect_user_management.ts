@@ -16,8 +16,7 @@ export class ConnnectUserManagement extends Stack {
     // Amazon Connect User Management parameters
     const connect_instance_id = new CfnParameter(this, 'connect_instance_id', {
       description: 'Enter your Amazon Connect Instance Id.',
-      type: 'String',
-      default: '409c1f65-219d-4d76-a480-9c66adeeffbd'
+      type: 'String'
     });
 
     const api_key_length = new CfnParameter(this, 'api_key_length', {
