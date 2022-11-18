@@ -11,17 +11,23 @@ The solution is recommened to be used in conjunction with an Amazon Connect inst
 
 ## Solution Architecture
 
-1. Rest API gateway configured to manage SCIM requests to a Lambda function from an IdP.
+/scim_architecture_diagram.png
+
+1. *SCIM Rest API* is an API Gateway to manage SCIM requests from an IdP application to the *SCIM user provisioning* Lambda function .
 - * A resource {Users+}
 - * A method for the {Users+} resource is created with a ‘POST"‘ for an AWS proxy to the SCIM user management Lambda function with a Lambda authorizer configured
 - * A stage for ‘dev’ is configured to deploy the API gateway
 - * A usage plan is created for the sage and associated configurations for throttling
 
-2. API key Lambda function - during deployment, a custom resource provisions an API key required for your IdP and stores the value in Systems Manager. This is primarily to ensure the IdP application is authenticated to invoke the API Gateway.
+2. *API token generation* Lambda function - during deployment, a custom resource creates an API Token required to configure your IdP’s API connection and stores the value in a Systems Manager parameter. This is to restrict authorized entities, such as the IdP application, is authenticated to invoke the API Gateway. 
 
-3. Authorizer Lambda function - used to process bearer tokens, such as (JSON Web Token) JWT or Oauth token, to authorize requests to the API gateway
+**Important**: In a Production environment, this API token should be provisioned and stored in accordance with credential management standards of the environment.
 
-4. SCIM user Lambda function - handles the SCIM requests coming from the IdP to Create, Read, Update, Delete users and security profile associations.
+3. *Authorizer* Lambda function is used to verify Header request auth tokens, such as (JSON Web Token) JWT or Oauth token, matches the Systems Manager parameter value to authorize requests to the API gateway. 
+
+**Important**: Lambda authorizers can be configured in many ways and depend on requirements and standards used in the environment. You can read about different ways to [Use API Gateway Lambda authorizers](https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-use-lambda-authorizer.html). 
+
+4. *SCIM user provisioning* Lambda function handles the SCIM requests coming from the IdP to Create, Read, Update, Delete users and security profile associations.
 
 ## Authors
 
