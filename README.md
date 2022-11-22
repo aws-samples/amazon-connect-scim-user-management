@@ -64,6 +64,19 @@ Once the CDK application has successfully deployed, you can configure the SCIM a
 
 ## Okta Setup
 
+### Okta application creation
+1. Sign in to your Okta instance as a user with appropriate permissions to Create Applications
+2. On the left-hand navigation, select **Applications** and then select **Applications**
+3. Select **Browse App Catalog**
+4. In the search bar, enter in “*SCIM 2.0 Test App (Header Auth)*" and select **Add Integration**
+5. Enter an “Application label” name and select **Next**
+6. For the *Sign-on method*, select **SAML 2.0**
+- Leave the default selection and the Default Relay State empty
+7. For the *Credential Details*, select the following:
+- Application username format: **Okta username**
+- Update application username on: **Create and update**
+8. Select **Done** to create the application
+
 ### Okta application setup
 1. Once your SCIM application is created , select the **Provisioning** tab
 2. Select **Configure API Integration** and select **Enable API integration**

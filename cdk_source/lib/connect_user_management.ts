@@ -384,7 +384,7 @@ export class ConnnectUserManagement extends Stack {
     })
 
     new CfnOutput(this,'Okta-API-Base-URL', {
-      description:'Base URL for the SCIM 2.0 Test App (Header Auth) credentials to authorize provisioning users from the identity provider and the Connect instance',
+      description:'Base URL for the SCIM 2.0 Test App (Header Auth) credential to authorize provisioning users from the identity provider and the Connect instance',
       value: 'https://' + scim_api_gw.restApiId + '.execute-api.' + this.region + '.' + this.urlSuffix + '/' + scim_api_stage.stageName + '/Users?filter=userName%20eq%20%22test.user%22'
     })
 
