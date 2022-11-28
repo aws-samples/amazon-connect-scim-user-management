@@ -56,8 +56,8 @@ To build this app, you need to be in the project root folder. Then run the follo
     Example Connect instance id: '12345678-1234-abcd-efgh-aaaaaabbccdd'
 
 Note the following **Output** after the deployment completes:
-1. *Okta-API-Base-URL* - Base URL for the SCIM 2.0 Test App (Header Auth) credentials to authorize provisioning users from the identity provider and the Connect instance.
-2. *Okta-API-Token-SSM-Parameter* - The AWS Systems Manager parameter ARN that has the API Token to configure in the SCIM application to communicate with the API Gateway.
+1. *IdP-API-Base-URL* - Base URL for the SCIM 2.0 Test App (Header Auth) credentials to authorize provisioning users from the identity provider and the Connect instance.
+2. *IdP-API-Token-SSM-Parameter* - The AWS Systems Manager parameter ARN that has the API Token to configure in the SCIM application to communicate with the API Gateway.
 **Important**: This is for demo purposes and the API token should be provisioned and stored in accordance with credential management standards of the environment.
 
 Once the CDK application has successfully deployed, you can configure the SCIM application for your identity provider. The following walkthrough will focus on Okta.

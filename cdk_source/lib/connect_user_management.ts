@@ -383,12 +383,12 @@ export class ConnnectUserManagement extends Stack {
       sourceArn: 'arn:' + this.partition + ':execute-api:' + this.region + ':' + this.account + ':' + scim_api_gw.restApiId + '/authorizers/' + scim_api_authorizer.authorizerId + '/*/*',
     })
 
-    new CfnOutput(this,'Okta-API-Base-URL', {
+    new CfnOutput(this,'IdP-API-Base-URL', {
       description:'Base URL for the SCIM 2.0 Test App (Header Auth) credential to authorize provisioning users from the identity provider and the Connect instance',
       value: 'https://' + scim_api_gw.restApiId + '.execute-api.' + this.region + '.' + this.urlSuffix + '/' + scim_api_stage.stageName + '/Users?filter=userName%20eq%20%22test.user%22'
     })
 
-    new CfnOutput(this,'Okta-API-Token-SSM-Parameter', {
+    new CfnOutput(this,'IdP-API-Token-SSM-Parameter', {
       description:'The AWS Systems Manager parameter ARN that has the API Token to configure in the SCIM application to communicate with the API Gateway.',
       value: api_key_name.parameterArn
     })
