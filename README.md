@@ -73,19 +73,22 @@ Note the following **Output** after the deployment completes:
 
 * The Cloudformation template to deploy the SCIM solution can be downloaded from [here](./CloudFormation/user_management_cloudformation.yaml).
 * The SCIM solution creates 3 Lambda function, download the below Lambda code
-      *[Authorizer Lambda code](./CloudFormation/lambdas/lambda_authorizer/lambda_authorizer.py)
-      *[API key Lambda code](./CloudFormation/lambdas/custom_resource/custom_resource_lambda.py)
-      *[OKTA User management Lambda code](./CloudFormation/lambdas/user_management/okta_idp/user_management_lambda.py)
-      *[AZURE User management Lambda code](./CloudFormation/lambdas/user_management/azure_idp/user_management_lambda.py)
+    [Authorizer Lambda code](./CloudFormation/lambdas/lambda_authorizer/lambda_authorizer.py)
+
+    [API key Lambda code](./CloudFormation/lambdas/custom_resource/custom_resource_lambda.py)
+
+    [OKTA User management Lambda code](./CloudFormation/lambdas/user_management/okta_idp/user_management_lambda.py)
+
+    [AZURE User management Lambda code](./CloudFormation/lambdas/user_management/azure_idp/user_management_lambda.py)
 
 **NOTE:**  Either OKTA or Azure User management Lambda code can be downloaded based on the Idp Type.
 
-* Compress the Lambda code to **.Zip** format and upload the Lambda code to an existing s3 Bucket or Create a new bucket and upload the Lambda code. Click :link[here]{href="https://docs.aws.amazon.com/AmazonS3/latest/userguide/create-bucket-overview.html"} to see the steps to create s3 bucket.
+* Compress the Lambda code to **.Zip** format and upload the Lambda code to an existing s3 Bucket or Create a new bucket and upload the Lambda code. Click [here](https://docs.aws.amazon.com/AmazonS3/latest/userguide/create-bucket-overview.html) to see the steps to create s3 bucket.
 
 ## Deploy the SCIM Solution from Console
 
 * Sign in to your AWS account and select the appropriate AWS Region which contains the Amazon Connect instance.
-* Open the :link[AWS CloudFormation console]{href="https://console.aws.amazon.com/cloudformation"}
+* Open the [AWS CloudFormation console](https://console.aws.amazon.com/cloudformation)
 * Select Create Stack with new Resources option.
 * Select **upload new template** and upload the template that was downloaded from the previous section.
 * Pass the below values as Parameters for the stack deployment to be successful.
@@ -122,13 +125,15 @@ Note the following **Output** after the deployment completes:
 * All the **.tf** files required for the deployment of the SCIM solution can be found [here](./Terraform/)
 * The SCIM solution creates 2 Lambda function, download the below Lambda code.
 
-      *[Authorizer Lambda code](./Terraform/lambdas/lambda_authorizer/lambda_authorizer.py)
-      *[OKTA User management Lambda code](./Terraform/lambdas/user_management/okta_idp/user_management_lambda.py)
-      *[AZURE User management Lambda code](./Terraform/lambdas/user_management/azure_idp/user_management_lambda.py)
+    [Authorizer Lambda code](./Terraform/lambdas/lambda_authorizer/lambda_authorizer.py)
+
+    [OKTA User management Lambda code](./Terraform/lambdas/user_management/okta_idp/user_management_lambda.py)
+
+    [AZURE User management Lambda code](./Terraform/lambdas/user_management/azure_idp/user_management_lambda.py)
 
 **NOTE:**  Either OKTA or Azure User management Lambda code can be downloaded based on the Idp Type.
 
-* Compress the Lambda code to **.Zip** format and upload the Lambda code to an existing s3 Bucket or Create a new bucket and upload the Lambda code. Click :link[here]{href="https://docs.aws.amazon.com/AmazonS3/latest/userguide/create-bucket-overview.html"} to see the steps to create s3 bucket.
+* Compress the Lambda code to **.Zip** format and upload the Lambda code to an existing s3 Bucket or Create a new bucket and upload the Lambda code. Click [here](https://docs.aws.amazon.com/AmazonS3/latest/userguide/create-bucket-overview.html) to see the steps to create s3 bucket.
 
 ## Deploy the SCIM Solution
 
@@ -148,7 +153,7 @@ Note the following **Output** after the deployment completes:
     * IsAzureIdpType          = (bool value for Azure Idp type, default value is false)
     * IsOktaIdpType           = (bool value for Azure Idp type, default value is false)
 
-* Configure Credentials of the AWS Account to which the SCIM solution to be provisioned. Click :link[here]{href="https://registry.terraform.io/providers/hashicorp/aws/latest/docs"} to see the steps.
+* Configure Credentials of the AWS Account to which the SCIM solution to be provisioned. Click [here](https://registry.terraform.io/providers/hashicorp/aws/latest/docs) to see the steps.
 
 * Run **terraform init** to ensure the provider used in the **versions.tf** are downloaded successfully.
 * Run **terraform plan** and verify if the resources to be provisioned are as expected.
@@ -174,11 +179,12 @@ Once the SCIM Solution has successfully deployed based on any one of the above I
 5. Enter an “Application label” name and select **Next**
 6. For the *Sign-on method*, select **SAML 2.0**
 
-- Leave the default selection and the Default Relay State empty
+* Leave the default selection and the Default Relay State empty
 
 7. For the *Credential Details*, select the following:
 
-- Application username format: **Okta username**
+* Application username format: **Okta username**
+
 * Update application username on: **Create and update**
 
 8. Select **Done** to create the application
@@ -189,7 +195,7 @@ Once the SCIM Solution has successfully deployed based on any one of the above I
 2. Select **Configure API Integration** and select **Enable API integration**
 3. Enter in the following information for the API integration:
 
-* Base URL: Enter in the API Gateway URL output **OktaAPIBaseURL** from the CloudFormation template (e.g. <https://<API_GATEWAY_ID>.execute-api>.<REGION>.amazonaws.com/dev/Users?filter=userName%20eq%20%22test.user)
+* Base URL: Enter in the API Gateway URL output **OktaAPIBaseURL** from the CloudFormation template (e.g. <<https://<API_GATEWAY_ID>.execute-api>>.<REGION>.amazonaws.com/dev/Users?filter=userName%20eq%20%22test.user)
 * API Token: Enter in the bearer token value found in the AWS Systems Manager parameter ARN listed in **OktaAPITokenSSMParameter**. The bearer token will be a 32 alphanumeric value (e.g. 123abc456def789ghi101jklexamples)
 
 4. Once the information is entered, select **Test API Credentials**
@@ -279,7 +285,7 @@ Once the SCIM application is created, you can create/add Okta groups to manage u
 
 ### AzureAD Group Provisioning
 
-The SCIM application built on the AWS account, looks for the specific user attribute to determine the Security Profile to be associated with the User at the time of Provisioning. The Lambda code looks for **Department** attibute in payload.The User in the Azure AD should have **Department** attribute with the value mapping to the Security profile name present in the Connect instance e.g., Agent, Admin, CallCenterManager etc. In order for user to be provisioned in connect instance at SCALE, we will leverage :link[Azure Dynamic AD groups]{href="https://learn.microsoft.com/en-us/azure/active-directory/enterprise-users/groups-create-rule"}.
+The SCIM application built on the AWS account, looks for the specific user attribute to determine the Security Profile to be associated with the User at the time of Provisioning. The Lambda code looks for **Department** attibute in payload.The User in the Azure AD should have **Department** attribute with the value mapping to the Security profile name present in the Connect instance e.g., Agent, Admin, CallCenterManager etc. In order for user to be provisioned in connect instance at SCALE, we will leverage [Azure Dynamic AD groups](https://learn.microsoft.com/en-us/azure/active-directory/enterprise-users/groups-create-rule).
 
 1. Select **Groups** from the Azure AD portal and select **New Group**
 2. Enter the Group name e.g. Connect-Admin and enter meaningful description.
