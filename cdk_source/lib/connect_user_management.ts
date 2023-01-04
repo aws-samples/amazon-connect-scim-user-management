@@ -399,7 +399,7 @@ export class ConnnectUserManagement extends Stack {
 
     const azure_idp_base_url = new CfnOutput(this,'azure_idp_base_url', {
       description:'Base URL for the Azure App to authorize provisioning users from the identity provider and the Connect instance',
-      value: 'https://' + scim_api_gw.restApiId + '.execute-api.' + this.region + '.' + this.urlSuffix + '/' + scim_api_stage.stageName ,
+      value: 'https://' + scim_api_gw.restApiId + '.execute-api.' + this.region + '.' + this.urlSuffix + '/' + scim_api_stage.stageName + '/scim',
       condition: idp_azure_condition
     });
 
