@@ -1,0 +1,494 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >-
+  This template creates an APIGateway that is SCIM compliant to interface with SCIM AD
+  sync for Amazon Connect auto provisioning of agents. The output is the API
+  tenant URL to use in SCIM configuration. Creates API GW and Lambda function.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "SCIM Configuration on AWS"
+        Parameters:
+          - AmazonConnectInstanceId
+          - ApiKeyLength
+          - IdpType
+          - DefaultRoutingProfile
+      - Label:
+          default: "Artifact details for Lambda function provisioning"
+        Parameters:
+          - CodeBucket
+          - UserManagementCodeObject
+          - AuthorizerCodeObject
+          - APIKeyGenerationCodeObject
+
+    ParameterLabels:
+      AmazonConnectInstanceId:
+        default: "Enter your Amazon Connect Instance Id"
+      ApiKeyLength:
+        default: "Enter the Length for the API key to be generated for lambda authorizer"
+      IdpType:
+        default: "The Idptype for user management , allowed values OKTA , Azure"
+      CodeBucket:
+        default: s3 bucket that cotains the Code for Lambda function provisioning
+      UserManagementCodeObject:
+        default: Zip file that contains the User management Lambda code.
+      AuthorizerCodeObject:
+        default: Zip file that contains the Lambda authorizer code.
+      APIKeyGenerationCodeObject:
+        default: Zip file that cotains the API Key for IDP Authorization Lambda code.
+      DefaultRoutingProfile:
+        default: The default routing profile that will be associated with the User provisioning
+
+Parameters:
+  AmazonConnectInstanceId:
+    Type: String
+  ApiKeyLength:
+    Type: Number
+    Default: 32
+  IdpType:
+    Type: String
+    AllowedValues:
+      - OKTA
+      - AZURE
+  CodeBucket:
+    Type: String
+  UserManagementCodeObject:
+    Type: String
+  AuthorizerCodeObject:
+    Type: String
+  APIKeyGenerationCodeObject:
+    Type: String
+  DefaultRoutingProfile:
+    Type: String
+    Default: "Basic Routing Profile"
+
+Conditions:
+  IdpCondition: !Or
+    - !Equals [!Ref IdpType, "OKTA"]
+    - !Equals [!Ref IdpType, "AZURE"]
+  OktaCondition: !Equals [!Ref IdpType, "OKTA"]
+  AzureCondition: !Equals [!Ref IdpType, "AZURE"]
+
+################# Create Lambda Function ##########################################
+Resources:
+  SCIMProvisioningLambda:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-Provisioninglambda"
+      Handler: user_management_lambda.lambda_handler
+      Runtime: python3.9
+      MemorySize: 512
+      Timeout: 30
+      Role: !GetAtt SCIMProvisioningLambdaExecutionRole.Arn
+      Description: AWS Lambda function for SCIM user provisioning
+      Environment:
+        Variables:
+          INSTANCE_ID: !Ref AmazonConnectInstanceId
+          ROUTING_PROFILE: !Ref DefaultRoutingProfile
+      Code:
+        S3Bucket: !Ref CodeBucket
+        S3Key: !Ref UserManagementCodeObject
+    DependsOn:
+      - SCIMProvisioningLambdaExecutionRole
+
+  SCIMAuthorizerLambda:
+    Condition: IdpCondition
+    Type: "AWS::Lambda::Function"
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-Authorizerlambda"
+      Handler: lambda_authorizer.lambda_handler
+      Runtime: python3.9
+      MemorySize: 512
+      Timeout: 30
+      Role: !GetAtt SCIMAuthorizerLambdaExecutionRole.Arn
+      Description: AWS Lambda Authorizer for SCIM user provisioning
+      Code:
+        S3Bucket: !Ref CodeBucket
+        S3Key: !Ref AuthorizerCodeObject
+      Environment:
+        Variables:
+          PARAMETER_NAME: !Ref APIKeyParameterStore
+
+  APIKeyGenerationLambda:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-Apikeylambda"
+      Handler: custom_resource_lambda.lambda_handler
+      Runtime: python3.9
+      MemorySize: 512
+      Timeout: 30
+      Role: !GetAtt BasicLambdaExecutionRole.Arn
+      Description: Custom Resource to create the API Key
+      Code:
+        S3Bucket: !Ref CodeBucket
+        S3Key: !Ref APIKeyGenerationCodeObject
+      Environment:
+        Variables:
+          PARAMETER_NAME: !Ref APIKeyParameterStore
+  ################################################################################
+
+  SCIMAuthorizer:
+    Type: AWS::ApiGateway::Authorizer
+    Properties:
+      AuthorizerUri: !Join
+        - ""
+        - - "arn:"
+          - Ref: AWS::Partition
+          - ":apigateway:"
+          - !Ref "AWS::Region"
+          - ":lambda:path/2015-03-31/functions/"
+          - !GetAtt
+            - SCIMAuthorizerLambda
+            - Arn
+          - /invocations
+      IdentitySource: method.request.header.Authorization
+      Name: !Sub "${AWS::StackName}-SCIMAuthorizer"
+      RestApiId: !Ref SCIMProvisioningAPIGW
+      Type: TOKEN
+
+  ################# Create API GW ##########################################
+  SCIMAPIProxyResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId:
+        Fn::GetAtt:
+          - SCIMProvisioningAPIGW
+          - RootResourceId
+      PathPart: "{Users+}"
+      RestApiId:
+        Ref: SCIMProvisioningAPIGW
+
+  SCIMAPIMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      HttpMethod: ANY
+      ResourceId:
+        Ref: SCIMAPIProxyResource
+      RestApiId:
+        Ref: SCIMProvisioningAPIGW
+      RequestParameters:
+        method.request.path.proxy: true
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref SCIMAuthorizer
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri:
+          Fn::Join:
+            - ""
+            - - "arn:"
+              - Ref: AWS::Partition
+              - ":apigateway:"
+              - Ref: AWS::Region
+              - ":lambda:path/2015-03-31/functions/"
+              - !GetAtt SCIMProvisioningLambda.Arn
+              - /invocations
+
+  SCIMProvisioningAPIGW:
+    Type: "AWS::ApiGateway::RestApi"
+    Properties:
+      Description: API GW invoked from SCIM Enterprise application and calls the Lambda function
+      EndpointConfiguration:
+        Types:
+          - EDGE
+      Name: !Sub "${AWS::StackName}-apigw"
+
+  SCIMAPIStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId:
+        Ref: SCIMProvisioningAPIGW
+      DeploymentId:
+        Ref: SCIMProvisioningAPIGWdeployment
+      StageName: dev
+
+  SCIMProvisioningAPIGWaccount:
+    Type: "AWS::ApiGateway::Account"
+    Properties:
+      CloudWatchRoleArn: !GetAtt
+        - >-
+          SCIMProvisioningAPIGWCloudWatchRole
+        - Arn
+    DependsOn:
+      - SCIMProvisioningAPIGW
+
+  SCIMProvisioningAPIGWdeployment:
+    Type: "AWS::ApiGateway::Deployment"
+    Properties:
+      RestApiId: !Ref SCIMProvisioningAPIGW
+      Description: Automatically created by the RestApi construct
+    DependsOn:
+      - SCIMAPIMethod
+      - SCIMAPIProxyResource
+
+  SCIMProvisioningAPIGWUsagePlan:
+    Type: "AWS::ApiGateway::UsagePlan"
+    Properties:
+      ApiStages:
+        - ApiId: !Ref SCIMProvisioningAPIGW
+          Stage: !Ref SCIMAPIStage
+      Description: SCIM API GW usage plan
+      Quota:
+        Limit: 5000
+        Period: DAY
+      Throttle:
+        BurstLimit: 1000
+        RateLimit: 500
+      UsagePlanName: !Sub "${AWS::StackName}-usageplan"
+
+  ################# Parameter Store to hold the API key for authorization #################
+
+  APIKeyParameterStore:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /connect/scim-integration/api-token
+      Description: The SSM parameter name for the API gateway API key.
+      Type: StringList
+      Value: default
+
+  ################# Create policies and Roles for Lambda and API GW
+  SCIMProvisioningAPIGWAnyAPIPermission:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      Action: "lambda:InvokeFunction"
+      FunctionName: !GetAtt
+        - SCIMProvisioningLambda
+        - Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Join
+        - ""
+        - - "arn:"
+          - !Ref "AWS::Partition"
+          - ":execute-api:"
+          - !Ref "AWS::Region"
+          - ":"
+          - !Ref "AWS::AccountId"
+          - ":"
+          - !Ref SCIMProvisioningAPIGW
+          - /
+          - !Ref >-
+            SCIMAPIStage
+          - /*/*
+
+  SCIMAuthPermission:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt SCIMAuthorizerLambda.Arn
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${SCIMProvisioningAPIGW}/authorizers/${SCIMAuthorizer}"
+
+  ############### Custom Resource for API Key Generation
+
+  ApiKeyCustomResource:
+    Type: AWS::CloudFormation::CustomResource
+    Properties:
+      Description: The custom Resource to create Api key and used by Lambda and authorizer.
+      ApiLength: !Ref ApiKeyLength
+      ServiceToken: !GetAtt APIKeyGenerationLambda.Arn
+
+  ## Create role for Lambda function
+  SCIMProvisioningLambdaExecutionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-ProvisioningRole"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: !Sub "${AWS::StackName}-ProvisioningPolicy"
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Action:
+                  - "connect:UpdateUserIdentityInfo"
+                  - "connect:DeleteUser"
+                  - "connect:ListRoutingProfiles"
+                  - "connect:ListUsers"
+                  - "connect:CreateUser"
+                  - "connect:SearchUsers"
+                  - "connect:ListSecurityProfiles"
+                  - "connect:DescribeUser"
+                  - "connect:DescribeSecurityProfile"
+                  - "connect:UpdateUserSecurityProfiles"
+                Resource:
+                  - !Join
+                    - ""
+                    - - "arn:aws:connect:"
+                      - !Ref "AWS::Region"
+                      - ":"
+                      - !Ref "AWS::AccountId"
+                      - ":instance/"
+                      - !Ref AmazonConnectInstanceId
+                  - !Join
+                    - ""
+                    - - "arn:aws:connect:"
+                      - !Ref "AWS::Region"
+                      - ":"
+                      - !Ref "AWS::AccountId"
+                      - ":instance/"
+                      - !Ref AmazonConnectInstanceId
+                      - "/security-profile/*"
+                  - !Join
+                    - ""
+                    - - "arn:aws:connect:"
+                      - !Ref "AWS::Region"
+                      - ":"
+                      - !Ref "AWS::AccountId"
+                      - ":instance/"
+                      - !Ref AmazonConnectInstanceId
+                      - "/routing-profile/*"
+                  - !Join
+                    - ""
+                    - - "arn:aws:connect:"
+                      - !Ref "AWS::Region"
+                      - ":"
+                      - !Ref "AWS::AccountId"
+                      - ":instance/"
+                      - !Ref AmazonConnectInstanceId
+                      - "/agent/*"
+                Effect: Allow
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action:
+              - "sts:AssumeRole"
+            Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+
+  SCIMAuthorizerLambdaExecutionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-AuthorizerRole"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: !Sub "${AWS::StackName}-AuthorizerPolicy"
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Action:
+                  - "ssm:GetParameter"
+                Resource: !Join
+                  - ""
+                  - - "arn:"
+                    - !Ref AWS::Partition
+                    - ":ssm:"
+                    - !Ref AWS::Region
+                    - ":"
+                    - !Ref AWS::AccountId
+                    - ":"
+                    - "parameter"
+                    - !Ref APIKeyParameterStore
+                Effect: Allow
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action:
+              - "sts:AssumeRole"
+            Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+  SCIMProvisioningAPIGWCloudWatchRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: "sts:AssumeRole"
+            Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+        Version: 2012-10-17
+      ManagedPolicyArns:
+        - !Join
+          - ""
+          - - "arn:"
+            - !Ref "AWS::Partition"
+            - ":iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs"
+  BasicLambdaExecutionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-ApiKeyLambdaRole"
+      Policies:
+        - PolicyName: !Sub "${AWS::StackName}-SsmPutPolicy"
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Action:
+                  - ssm:PutParameter
+                  - ssm:DeleteParameters
+                Resource: !Join
+                  - ""
+                  - - "arn:"
+                    - !Ref AWS::Partition
+                    - ":ssm:"
+                    - !Ref AWS::Region
+                    - ":"
+                    - !Ref AWS::AccountId
+                    - ":"
+                    - "parameter"
+                    - !Ref APIKeyParameterStore
+                Effect: Allow
+      ManagedPolicyArns:
+        - !Join
+          - ""
+          - - "arn:"
+            - !Ref "AWS::Partition"
+            - ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action:
+              - "sts:AssumeRole"
+            Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+
+Outputs:
+  SCIMProvisioningOktaTenantURL:
+    Condition: OktaCondition
+    Description: "URL to enter in OKTA SCIM provisioning"
+    Value: !Join
+      - ""
+      - - "https://"
+        - !Ref SCIMProvisioningAPIGW
+        - .execute-api.
+        - !Ref "AWS::Region"
+        - .
+        - !Ref "AWS::URLSuffix"
+        - /
+        - !Ref >-
+          SCIMAPIStage
+        - /Users?filter=userName%20eq%20%22test.user
+  SCIMProvisioningAzureTenantURL:
+    Condition: AzureCondition
+    Description: "URL to enter in Azure SCIM provisioning"
+    Value: !Join
+      - ""
+      - - "https://"
+        - !Ref SCIMProvisioningAPIGW
+        - .execute-api.
+        - !Ref "AWS::Region"
+        - .
+        - !Ref "AWS::URLSuffix"
+        - /
+        - !Ref >-
+          SCIMAPIStage
+        - /scim/
+  IdPAPITokenSSMParameter:
+    Description: The Parameter store that contains the IDP Authorization API Key
+    Value: !Join
+      - ""
+      - - "arn:"
+        - !Ref AWS::Partition
+        - ":ssm:"
+        - !Ref AWS::Region
+        - ":"
+        - !Ref AWS::AccountId
+        - ":"
+        - "parameter"
+        - !Ref APIKeyParameterStore
