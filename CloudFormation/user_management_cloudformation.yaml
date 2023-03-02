@@ -85,7 +85,7 @@ Resources:
       Environment:
         Variables:
           INSTANCE_ID: !Ref AmazonConnectInstanceId
-          ROUTING_PROFILE: !Ref DefaultRoutingProfile
+          DEFAULT_ROUTING_PROFILE: !Ref DefaultRoutingProfile
       Code:
         S3Bucket: !Ref CodeBucket
         S3Key: !Ref UserManagementCodeObject
