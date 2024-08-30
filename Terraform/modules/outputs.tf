@@ -1,5 +1,5 @@
 output "Okta_Idp_Url" {
-  value       = var.IsOKTAIdpType ? "${aws_api_gateway_deployment.api_deployment.invoke_url}/Users?filter=userName%20eq%20%22test.user" : null
+  value       = var.IsOKTAIdpType ? "${aws_api_gateway_stage.stage.invoke_url}/Users?filter=userName%20eq%20%22test.user" : null
   description = "URL to enter in OKTA SCIM provisioning"
 }
 

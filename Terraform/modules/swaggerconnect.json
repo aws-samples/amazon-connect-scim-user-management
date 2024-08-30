@@ -1,0 +1,80 @@
+{
+    "swagger": "2.0",
+    "info": {
+        "description": "Amazon Connect User mgmt api.",
+        "version": "v1.0",
+        "title": "Connect-User-api"
+    },
+    "basePath": "/dev",
+    "schemes": [
+        "https"
+    ],
+    "paths": {
+        "/{Users+}": {
+            "x-amazon-apigateway-any-method": {
+                "produces": [
+                    "application/json"
+                ],
+                "parameters": [
+                    {
+                        "name": "proxy",
+                        "in": "path",
+                        "required": true,
+                        "type": "string"
+                    }
+                ],
+                "x-amazon-apigateway-integration": {
+                    "httpMethod": "POST",
+                    "uri": "${connect_user_management_lambda}",
+                    "responses": {
+                        "default": {
+                            "statusCode": "200"
+                        }
+                    },
+                    "passthroughBehavior": "WHEN_NO_TEMPLATES",
+                    "contentHandling": "CONVERT_TO_TEXT",
+                    "type": "aws_proxy"
+                },
+                "security": [
+                    {
+                        "aws-lambda-authorizer": []
+                    }
+                ]
+            }
+        }
+    },
+    "securityDefinitions": {
+        "aws-lambda-authorizer": {
+            "type": "apiKey",
+            "name": "Authorization",
+            "in": "header",
+            "x-amazon-apigateway-authtype": "custom",
+            "x-amazon-apigateway-authorizer": {
+                "authorizerUri": "${auth_lambda_invoke_arn}",
+                "authorizerResultTtlInSeconds": 0,
+                "identitySource": "method.request.header.Authorization",
+                "type": "TOKEN"
+            }
+        }
+    },
+    "definitions": {
+        "Empty": {
+            "type": "object",
+            "title": "Empty Schema"
+        }
+    },
+    "x-amazon-apigateway-policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Sid": "",
+                "Effect": "Allow",
+                "Principal": {
+                    "AWS": "*"
+                },
+                "Action": "execute-api:Invoke",
+                "Resource": "*"
+            }
+        ]
+    }
+}

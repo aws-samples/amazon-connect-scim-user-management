@@ -36,11 +36,6 @@ variable "stage_name" {
   default     = "dev"
 }
 
-variable "use_import_from_swagger" {
-  type    = bool
-  default = true
-}
-
 variable "swagger_file_path" {
   type = string
 }

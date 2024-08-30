@@ -9,7 +9,10 @@ node_modules
 .cdk.staging
 cdk.out
 
-# terraform gitignore content 
+# terraform gitignore content
+
+# Terraform lock file 
+*.terraform.lock.hcl*
 
 # Local .terraform directories
 **/.terraform/*
