@@ -148,10 +148,11 @@ Note the following **Output** after the deployment completes:
     * s3_user_mgmt_object     = (Zip file that contains the User management Lambda code.)
     * s3_lambda_auth_object   = (Zip file that contains the Lambda authorizer code.)
     * stage_name              = (Stage name to be used for creation of API, default value is "dev")
-    * use_import_from_swagger = (bool value if swagger file is used, default value is true)
     * swagger_file_path       = (Path of the swagger file that is used to deploy the api gateway)
     * IsAzureIdpType          = (bool value for Azure Idp type, default value is false)
     * IsOktaIdpType           = (bool value for Azure Idp type, default value is false)
+
+***NOTE:*** An example swagger file is included in the ![repo](./Terraform/modules/swaggerconnect.json). This can be modified based on your organization requirements.
 
 * Configure Credentials of the AWS Account to which the SCIM solution to be provisioned. Click [here](https://registry.terraform.io/providers/hashicorp/aws/latest/docs) to see the steps.
 
