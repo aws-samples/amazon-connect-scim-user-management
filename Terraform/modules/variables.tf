@@ -44,3 +44,20 @@ variable "default_routing_profile" {
   type    = string
   default = "Basic Routing Profile"
 }
+
+variable "default_security_profile" {
+  type        = string
+  default     = "Agent"
+  description = "Security profile assigned when the IdP supplies no entitlements."
+}
+
+variable "api_token_length" {
+  type        = number
+  default     = 32
+  description = "Length of the generated SCIM API bearer token."
+
+  validation {
+    condition     = var.api_token_length >= 32 && var.api_token_length <= 256
+    error_message = "api_token_length must be between 32 and 256."
+  }
+}

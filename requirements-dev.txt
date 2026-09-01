@@ -1,0 +1,29 @@
+# Pinned toolchain for running the Lambda handler tests and linters.
+#
+# These are development dependencies only. The Lambda functions themselves add no
+# packages to the deployment bundle: boto3 and botocore are provided by the
+# python3.14 Lambda runtime, and nothing else is imported at runtime.
+#
+# Install with:
+#   python3.14 -m venv .venv
+#   .venv/bin/pip install -r requirements-dev.txt
+#
+# To upgrade, raise the pins below to the versions you intend to adopt, reinstall
+# from this file, and re-run the test suite and linters before committing. Do not
+# resolve versions by installing without constraints: that pulls whatever is
+# current at the time and commits it unreviewed, which is the supply-chain risk
+# these pins exist to remove. Check the resulting diff before committing it.
+
+boto3==1.43.86
+botocore==1.43.86
+iniconfig==2.3.0
+jmespath==1.1.0
+packaging==26.3
+pluggy==1.6.0
+Pygments==2.21.0
+pytest==9.1.1
+python-dateutil==2.9.0.post0
+ruff==0.16.5
+s3transfer==0.19.2
+six==1.17.0
+urllib3==2.7.0

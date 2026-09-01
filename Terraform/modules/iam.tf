@@ -1,27 +1,26 @@
 data "aws_caller_identity" "current" {}
 data "aws_region" "current_region" {}
+data "aws_partition" "current" {}
 
 data "aws_iam_policy_document" "connect_user_managment" {
   statement {
     sid = "ConnectUserPermissions"
 
     actions = [
-      "connect:UpdateUserIdentityInfo",
-      "connect:DeleteUser",
-      "connect:ListRoutingProfiles",
-      "connect:ListUsers",
       "connect:CreateUser",
+      "connect:DeleteUser",
       "connect:DescribeUser",
-      "connect:SearchUsers",
+      "connect:ListRoutingProfiles",
       "connect:ListSecurityProfiles",
-      "connect:DescribeSecurityProfile",
+      "connect:ListUsers",
+      "connect:SearchUsers",
       "connect:UpdateUserSecurityProfiles"
     ]
     resources = [
-      "arn:aws:connect:${data.aws_region.current_region.name}:${data.aws_caller_identity.current.account_id}:instance/${var.connect_instance_id}",
-      "arn:aws:connect:${data.aws_region.current_region.name}:${data.aws_caller_identity.current.account_id}:instance/${var.connect_instance_id}/routing-profile/*",
-      "arn:aws:connect:${data.aws_region.current_region.name}:${data.aws_caller_identity.current.account_id}:instance/${var.connect_instance_id}/security-profile/*",
-      "arn:aws:connect:${data.aws_region.current_region.name}:${data.aws_caller_identity.current.account_id}:instance/${var.connect_instance_id}/agent/*"
+      "arn:${data.aws_partition.current.partition}:connect:${data.aws_region.current_region.region}:${data.aws_caller_identity.current.account_id}:instance/${var.connect_instance_id}",
+      "arn:${data.aws_partition.current.partition}:connect:${data.aws_region.current_region.region}:${data.aws_caller_identity.current.account_id}:instance/${var.connect_instance_id}/routing-profile/*",
+      "arn:${data.aws_partition.current.partition}:connect:${data.aws_region.current_region.region}:${data.aws_caller_identity.current.account_id}:instance/${var.connect_instance_id}/security-profile/*",
+      "arn:${data.aws_partition.current.partition}:connect:${data.aws_region.current_region.region}:${data.aws_caller_identity.current.account_id}:instance/${var.connect_instance_id}/agent/*"
     ]
   }
 }
@@ -35,6 +34,17 @@ data "aws_iam_policy_document" "connect_auth_policy" {
     ]
     resources = [
       aws_ssm_parameter.apikey.arn
+    ]
+  }
+
+  statement {
+    sid = "ConnectParameterDecrypt"
+
+    actions = [
+      "kms:Decrypt"
+    ]
+    resources = [
+      aws_kms_key.api_token.arn
     ]
   }
 }

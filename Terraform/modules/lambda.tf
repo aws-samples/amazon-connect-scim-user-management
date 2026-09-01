@@ -4,7 +4,7 @@ resource "aws_lambda_function" "connect_usermgmt_lambda" {
   function_name = "connect_user_provisioning_lambda"
   role          = aws_iam_role.connect_user_management_role.arn
   handler       = "user_management_lambda.lambda_handler"
-  runtime       = "python3.9"
+  runtime       = "python3.14"
   tracing_config {
     mode = "PassThrough"
   }
@@ -12,8 +12,9 @@ resource "aws_lambda_function" "connect_usermgmt_lambda" {
   timeout                        = 600
   environment {
     variables = {
-      INSTANCE_ID             = var.connect_instance_id
-      DEFAULT_ROUTING_PROFILE = var.default_routing_profile
+      INSTANCE_ID              = var.connect_instance_id
+      DEFAULT_ROUTING_PROFILE  = var.default_routing_profile
+      DEFAULT_SECURITY_PROFILE = var.default_security_profile
     }
   }
 }
@@ -24,7 +25,7 @@ resource "aws_lambda_function" "lambda_authorizer" {
   function_name                  = "connect_lambda_authorizer"
   role                           = aws_iam_role.connect_lambda_authorizer_role.arn
   handler                        = "lambda_authorizer.lambda_handler"
-  runtime                        = "python3.9"
+  runtime                        = "python3.14"
   reserved_concurrent_executions = -1
   timeout                        = 600
   tracing_config {
