@@ -104,8 +104,8 @@ Behaviours worth knowing:
 
 ### Pagination and limits
 
-* `count` is clamped to 100, so a client cannot request an unbounded response.
-* A single `PATCH /Groups/{id}` may change at most 250 memberships, and exceeding that returns HTTP 400. Each change costs a `DescribeUser` plus an `UpdateUserSecurityProfiles`, and Amazon Connect throttles those at 2 requests per second, so the real ceiling is API Gateway's 29-second integration timeout — which no deployment currently configures, and which is well below what 250 changes can complete. Lambda timeouts also differ per deployment (CDK 900s, Terraform 600s, CloudFormation 30s). Harmonising these is an open item; until then keep membership batches small.
+* `count` is clamped to 40 and defaults to 25. The clamp is derived from the response budget rather than chosen for tidiness: API Gateway's integration timeout is 29 seconds and cannot be raised, `GET /Users` costs roughly one Amazon Connect call per user in the page, and those calls are throttled at 2 per second. 40 is what fits with margin. A client asking for more receives 40, and `itemsPerPage` reports 40 rather than the number asked for, so the client paginates instead of waiting on a page that would time out.
+* A single `PATCH /Groups/{id}` may change at most 250 memberships, and exceeding that returns HTTP 400. Each change costs a `DescribeUser` plus an `UpdateUserSecurityProfiles` at 2 requests per second, so a full 250-member batch cannot finish inside the 29-second integration timeout — keep membership batches well under that. Lambda timeouts are set generously (900 seconds) in all three deployments so that a request the gateway has already abandoned still completes its writes rather than being killed halfway through a batch; the gateway timeout, not the Lambda timeout, is what the identity provider observes.
 * Amazon Connect's user-management quotas are **per AWS account per Region**, so multiple Connect instances in one account share them. The provisioning function uses adaptive boto3 retries to absorb throttling rather than surfacing it to the IdP as a provisioning failure.
 
 
@@ -282,6 +282,14 @@ Note the following **Output** after the deployment completes:
     * IsOKTAIdpType           = (bool value for Okta Idp type, default value is false)
     * default_security_profile = (Security profile assigned when the IdP sends no entitlements, default value is "Agent")
     * api_token_length        = (Length of the generated SCIM API bearer token, 32-256, default 32)
+    * manage_apigw_account_settings = (bool, default true. Creates the account-level API Gateway CloudWatch role that access logging needs. Set false if another stack in this account and Region already owns it -- see below.)
+
+***NOTE on `manage_apigw_account_settings`:*** API Gateway's CloudWatch role is a
+single account-and-Region setting, not a per-API one. This deployment creates it by
+default so its access logging works on a fresh account, matching what the CDK and
+CloudFormation deployments do. If something else already sets it, two owners will
+fight over one value on every apply — set this to `false` and the rest of the
+deployment is unchanged.
 
 ***NOTE:*** An example swagger file is included in the ![repo](./Terraform/modules/swaggerconnect.json). This can be modified based on your organization requirements.
 
@@ -482,6 +490,22 @@ After building your TypeScript code, you will be able to run the CDK toolkits co
     $ npx cdk diff
     <shows diff against deployed stack>
 
+## Upgrading from an earlier deployment
+
+**Do not update an existing 1.0.0 stack in place.** That release owned the token parameter as a template resource; this one has its custom resource create it as an encrypted `SecureString`. On `update-stack` the custom resource rewrites the parameter and CloudFormation's cleanup phase then deletes it, because the resource is no longer in the template. The stack reports success, and the SCIM endpoint returns 401 for every request because there is no token for the authorizer to compare against. This was tested end to end; the cleanup delete lands about two seconds after the custom resource finishes.
+
+Delete the previous stack, or delete the parameter, and deploy this release fresh.
+
+If a stack has already been upgraded in place, re-run the deployment with a different token length. That value reaches the custom resource as a property, so changing it forces its `Update` to run again; it finds the parameter absent and mints a new token.
+
+    # CDK. The parameter is 'apikeylength', not 'api_key_length' -- CloudFormation
+    # logical ids are alphanumeric, so CDK strips the underscores at synth time.
+    $ npx cdk deploy -c idp_type=<okta|azure> --parameters apikeylength=33
+
+For CloudFormation, re-run your `update-stack` with a different `ApiKeyLength` and `UsePreviousValue=true` on the rest. Note the parameter names differ between the two deployments: the CloudFormation template declares `ApiKeyLength` and `AmazonConnectInstanceId`, while the CDK-synthesised template has `apikeylength` and `connectinstanceid`.
+
+The token value changes on every one of these paths, so read it back and re-enter it in the identity provider's provisioning settings afterwards. The Lambda packaging also changed — see the migration notes in [CHANGELOG.md](./CHANGELOG.md), since a zip containing only the entry point now fails at import.
+
 ## Development
 
 The CDK app and the Lambda handlers are tested separately.
@@ -509,7 +533,13 @@ The CDK app and the Lambda handlers are tested separately.
 
 ### Keeping the three deployments in step
 
-`cdk_source/lambdas` is the canonical handler source. The CloudFormation and Terraform trees hold byte-identical copies, because each deployment packages its own Lambda artifacts. `tests/unit/test_handler_copies.py` compares every copy against the canonical version and fails on any difference. After changing a handler, copy it across and re-run the suite. Note that this repository has no CI, so that guard only fires when the suite is run locally — run it before opening a pull request.
+`cdk_source/lambdas` is the canonical handler source. The CloudFormation and Terraform trees hold byte-identical copies, because each deployment packages its own Lambda artifacts. `tests/unit/test_handler_copies.py` compares every copy against the canonical version and fails on any difference. After changing a handler, copy it across and re-run the suite.
+
+### CI
+
+`.github/workflows/ci.yml` runs everything in the Development section above on every pull request and on pushes to `main`, in three jobs: the Lambda handler tests with `ruff` and `cfn-lint`, the CDK build with `jest` and a `cdk synth` per identity provider, and `terraform validate`/`fmt`. The drift guard above is only an actual guard because something runs it on every change — before this workflow existed it fired only when a contributor happened to run the suite locally.
+
+`requirements-dev.txt` pins every dependency including transitive ones. The pins were produced by resolving the direct dependencies in a clean environment and freezing the result; to upgrade, do the same in a fresh virtualenv, re-run the suite and the linters, and commit the new freeze.
 
 The Python tests run against an in-memory Amazon Connect fake rather than mocking boto3 calls in order. The fake deliberately models the `SearchUsers` index lag: with an instantly-consistent fake, a handler that reads membership back through `SearchUsers` immediately after a write passes its tests and reports empty membership in production.
 

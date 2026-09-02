@@ -87,8 +87,13 @@ Resources:
       FunctionName: !Sub "${AWS::StackName}-Provisioninglambda"
       Handler: user_management_lambda.lambda_handler
       Runtime: python3.14
+      LoggingConfig:
+        LogGroup: !Ref SCIMProvisioningLogGroup
       MemorySize: 512
-      Timeout: 30
+      # A membership patch makes two throttled Connect calls per member. At 30s the
+      # function was killed part-way through, leaving some users updated and some
+      # not. API Gateway still cuts the caller off at 29s, but the work completes.
+      Timeout: 900
       Role: !GetAtt SCIMProvisioningLambdaExecutionRole.Arn
       Description: AWS Lambda function for SCIM user provisioning
       Environment:
@@ -109,8 +114,11 @@ Resources:
       FunctionName: !Sub "${AWS::StackName}-Authorizerlambda"
       Handler: lambda_authorizer.lambda_handler
       Runtime: python3.14
+      LoggingConfig:
+        LogGroup: !Ref SCIMAuthorizerLogGroup
       MemorySize: 512
-      Timeout: 30
+      # One cached GetParameter, and it must answer inside API Gateway's 29s window.
+      Timeout: 10
       Role: !GetAtt SCIMAuthorizerLambdaExecutionRole.Arn
       Description: AWS Lambda Authorizer for SCIM user provisioning
       Code:
@@ -126,6 +134,8 @@ Resources:
       FunctionName: !Sub "${AWS::StackName}-Apikeylambda"
       Handler: custom_resource_lambda.lambda_handler
       Runtime: python3.14
+      LoggingConfig:
+        LogGroup: !Ref APIKeyGenerationLogGroup
       MemorySize: 512
       Timeout: 30
       Role: !GetAtt BasicLambdaExecutionRole.Arn
@@ -204,6 +214,28 @@ Resources:
         Types:
           - EDGE
       Name: !Sub "${AWS::StackName}-apigw"
+
+  # The functions otherwise write to implicit log groups that never expire, and
+  # these logs record usernames. The names below are deliberately not the implicit
+  # /aws/lambda/<function> names, so creating them cannot collide with logs an
+  # earlier deployment left behind.
+  SCIMProvisioningLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AWS::StackName}-provisioning"
+      RetentionInDays: 365
+
+  SCIMAuthorizerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AWS::StackName}-authorizer"
+      RetentionInDays: 365
+
+  APIKeyGenerationLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AWS::StackName}-apikey"
+      RetentionInDays: 365
 
   SCIMAPIAccessLogGroup:
     Type: AWS::Logs::LogGroup

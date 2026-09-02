@@ -60,15 +60,44 @@ def requested_length(properties):
     return length
 
 
-def parameter_exists():
-    """Return True when the token parameter is already present."""
+def describe_parameter():
+    """Return the token parameter, or ``None`` when it is absent.
+
+    Deliberately ``get_parameter`` rather than ``describe_parameters``:
+    ``ssm:DescribeParameters`` does not support resource-level permissions, so
+    using it would force ``Resource: "*"`` into this role and undo the narrowing
+    this release performed. ``get_parameter`` is scoped to the one parameter and
+    still reports ``Type``, which is what distinguishes a current SecureString from
+    a plaintext one left by an earlier release. It does not report the KMS key id;
+    see :func:`is_current_shape`.
+    """
     try:
-        SSM_CLIENT.get_parameter(Name=PARAMETER_NAME, WithDecryption=False)
+        response = SSM_CLIENT.get_parameter(Name=PARAMETER_NAME, WithDecryption=False)
     except ClientError as error:
         if error.response["Error"]["Code"] == "ParameterNotFound":
-            return False
+            return None
         raise
-    return True
+    return response["Parameter"]
+
+
+def parameter_exists():
+    """Return True when the token parameter is already present."""
+    return describe_parameter() is not None
+
+
+def is_current_shape(parameter):
+    """True when the existing parameter is already an encrypted SecureString.
+
+    A parameter left behind by an earlier release is a plaintext ``String`` or
+    ``StringList``; retaining one of those would keep the bearer token in clear
+    text, so it is rewritten rather than kept.
+
+    The KMS key is not checked, because reading it needs ``ssm:DescribeParameters``
+    which cannot be scoped to one parameter. A SecureString under some *other*
+    stack's key cannot arise from this solution any more: ``Create`` now refuses to
+    run when the parameter already exists.
+    """
+    return parameter is not None and parameter.get("Type") == "SecureString"
 
 
 def put_token(length):
@@ -89,21 +118,47 @@ def put_token(length):
 def apply(request_type, properties):
     """Create, retain or delete the token for the given CloudFormation request."""
     if request_type == "Create":
+        existing = describe_parameter()
+        if existing is not None:
+            # The parameter name is fixed and not stack-scoped, so a second stack
+            # in the same account and region would otherwise silently overwrite the
+            # first stack's live token and start returning 401s to its identity
+            # provider with nothing in either stack's events. The AWS::SSM::Parameter
+            # resource this replaced failed loudly on the duplicate; so does this.
+            raise ValueError(
+                f"{PARAMETER_NAME} already exists (type {existing.get('Type')}). "
+                "Another deployment of this solution is using it. Delete that stack, "
+                "or delete the parameter, before creating this one."
+            )
         put_token(requested_length(properties))
 
     elif request_type == "Update":
-        # The token is deliberately not rotated on stack update: doing so would
-        # silently invalidate the value already configured in the identity
-        # provider. Rotate by deleting the parameter and updating the stack, then
-        # re-entering the new token in the IdP.
-        if parameter_exists():
+        existing = describe_parameter()
+        if is_current_shape(existing):
+            # The token is deliberately not rotated on stack update: doing so would
+            # silently invalidate the value already configured in the identity
+            # provider. Rotate by deleting the parameter and updating the stack,
+            # then re-entering the new token in the IdP.
             LOGGER.info(
                 "Retaining the existing API token in %s. Delete the parameter and "
                 "update the stack to rotate it.",
                 PARAMETER_NAME,
             )
+        elif existing is None:
+            LOGGER.info("No token found in %s; generating one.", PARAMETER_NAME)
+            put_token(requested_length(properties))
         else:
-            LOGGER.info("No existing token found in %s; generating one.", PARAMETER_NAME)
+            # Present but not a SecureString under our key -- an earlier release
+            # stored it as a plaintext String or StringList. Rewriting is the point
+            # of the upgrade, and the value changes, so the identity provider needs
+            # the new token.
+            LOGGER.warning(
+                "%s exists as %s rather than a SecureString under this stack's key; "
+                "rewriting it. The token value changes, so update it in the identity "
+                "provider's provisioning settings.",
+                PARAMETER_NAME,
+                existing.get("Type"),
+            )
             put_token(requested_length(properties))
 
     elif request_type == "Delete":

@@ -13,6 +13,7 @@ import azure
 import handler_core
 import okta
 import pytest
+import scim
 from conftest import AGENT_PROFILE, QA_PROFILE, SUPERVISOR_PROFILE, api_event
 
 
@@ -101,6 +102,67 @@ class TestUserPagination:
         second_ids = [resource["id"] for resource in second["Resources"]]
         assert not set(first_ids) & set(second_ids)
         assert set(first_ids) | set(second_ids) <= set(ids)
+
+
+class TestConnectCallBudget:
+    """A page must fit inside API Gateway's 29s integration window.
+
+    Listing users previously cost 2N+1 Connect calls -- a DescribeUser plus a full
+    security-profile sweep per user -- so a default-size page could not complete and
+    the caller got a 504 while the function kept running. The suite could not see
+    this at all until the fake gained a call budget.
+    """
+
+    def test_listing_a_full_default_page_stays_within_budget(self, connect):
+        connect.page_size = 1000  # let one ListUsers return everything
+        for index in range(scim.DEFAULT_PAGE_SIZE):
+            connect.add_user(f"user{index}@example.com", [AGENT_PROFILE])
+        connect.calls.clear()
+        status, body = call("GET", "Users")
+        assert status == 200
+        assert len(body["Resources"]) == scim.DEFAULT_PAGE_SIZE
+        # N DescribeUser + one ListUsers + one security-profile sweep.
+        connect.assert_max_calls(scim.DEFAULT_PAGE_SIZE + 4)
+
+    def test_the_profile_sweep_happens_once_not_once_per_user(self, connect):
+        connect.page_size = 1000
+        for index in range(10):
+            connect.add_user(f"user{index}@example.com", [AGENT_PROFILE])
+        connect.calls.clear()
+        call("GET", "Users")
+        assert connect.count("list_security_profiles") == 1
+
+    def test_the_largest_permitted_page_stays_within_budget(self, connect):
+        connect.page_size = 1000
+        for index in range(scim.MAX_PAGE_SIZE):
+            connect.add_user(f"user{index}@example.com", [AGENT_PROFILE])
+        connect.calls.clear()
+        call("GET", "Users", query={"count": str(scim.MAX_PAGE_SIZE)})
+        # At 2 requests/second this must stay under ~29 seconds.
+        connect.assert_max_calls(scim.MAX_PAGE_SIZE + 4)
+
+    def test_a_larger_count_is_clamped_rather_than_honoured(self, connect):
+        connect.page_size = 1000
+        for index in range(scim.MAX_PAGE_SIZE + 20):
+            connect.add_user(f"user{index}@example.com", [AGENT_PROFILE])
+        status, body = call("GET", "Users", query={"count": "1000"})
+        assert status == 200
+        assert body["itemsPerPage"] == scim.MAX_PAGE_SIZE
+        assert len(body["Resources"]) == scim.MAX_PAGE_SIZE
+
+    def test_the_cache_does_not_leak_between_invocations(self, connect):
+        # Lambda reuses the execution environment, so a stale map would serve a
+        # profile name that had since been renamed.
+        user_id = connect.add_user("a@example.com", [AGENT_PROFILE])
+        call("GET", f"Users/{user_id}")
+        connect.security_profiles.append(
+            {"Id": "sp-new-0009", "Name": "NewlyCreated", "LastModifiedTime": None}
+        )
+        connect.refresh_search_index()
+        connect.calls.clear()
+        call("GET", f"Users/{user_id}")
+        # A second invocation re-reads the profiles rather than reusing the map.
+        assert connect.count("list_security_profiles") >= 1
 
 
 class TestCreateUser:

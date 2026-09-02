@@ -23,9 +23,15 @@ USER_SCHEMA = "urn:ietf:params:scim:schemas:core:2.0:User"
 GROUP_SCHEMA = "urn:ietf:params:scim:schemas:core:2.0:Group"
 ENTERPRISE_USER_SCHEMA = "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User"
 
-# A page cap stops a client asking for an unbounded response.
-MAX_PAGE_SIZE = 100
-DEFAULT_PAGE_SIZE = 100
+# Page sizes are bounded by how many Amazon Connect calls a page costs, not by
+# taste. Building a SCIM user resource needs one DescribeUser per user, so a page
+# of N users costs N+2 calls; Connect throttles them at 2 requests per second and
+# API Gateway cuts the integration off at 29 seconds. That puts the hard ceiling
+# near 56 users, so the cap leaves headroom for retries and the default sits well
+# inside it. RFC 7644 section 3.4.2.4 permits returning fewer items than requested,
+# so a client asking for more simply paginates.
+MAX_PAGE_SIZE = 40
+DEFAULT_PAGE_SIZE = 25
 
 # Each membership change costs a DescribeUser plus an UpdateUserSecurityProfiles,
 # and Amazon Connect throttles those at 2 requests per second. The binding

@@ -194,7 +194,19 @@ describe('API token', () => {
     // Assert the whole property set. Filtering for the key and asserting length 1
     // was always true: CDK renders serviceToken into Properties regardless, and
     // object keys are unique, so re-adding the regression would still pass.
-    expect(Object.keys(resource.Properties).sort()).toEqual(['ApiLength', 'ServiceToken']);
+    expect(Object.keys(resource.Properties).sort()).toEqual([
+      'ApiLength',
+      'ServiceToken',
+      'TokenStorageVersion',
+    ]);
+  });
+
+  it('sends an Update on upgrade so a legacy plaintext token can be migrated', () => {
+    // Without a property whose value differs from the previous release,
+    // CloudFormation sends no Update request at all and the handler never gets the
+    // chance to rewrite a 1.0.0 plaintext parameter as a SecureString.
+    const [resource] = Object.values(synth().findResources('Custom::ScimApiToken'));
+    expect(resource.Properties.TokenStorageVersion).toBe(2);
   });
 
   it('constrains the requested token length', () => {
@@ -281,5 +293,25 @@ describe('template hygiene', () => {
     for (const group of Object.values(logGroups)) {
       expect(group.Properties.RetentionInDays).toBeGreaterThan(0);
     }
+  });
+
+  it('gives every Lambda function a log group defined by this template', () => {
+    // The assertion above is satisfied by the API Gateway access log group alone,
+    // so it stayed green while the functions still wrote to implicit log groups
+    // that never expire. This one fails if any function lacks a managed group.
+    const template = synth().toJSON();
+    const logGroups = new Set(
+      Object.entries(template.Resources)
+        .filter(([, r]: [string, any]) => r.Type === 'AWS::Logs::LogGroup')
+        .map(([id]) => id),
+    );
+    const functions = Object.entries(template.Resources).filter(
+      ([, r]: [string, any]) => r.Type === 'AWS::Lambda::Function',
+    );
+    expect(functions.length).toBeGreaterThanOrEqual(3);
+    const withoutGroup = (functions as [string, any][])
+      .filter(([, fn]) => !logGroups.has(fn.Properties.LoggingConfig?.LogGroup?.Ref))
+      .map(([id]) => id);
+    expect(withoutGroup).toEqual([]);
   });
 });

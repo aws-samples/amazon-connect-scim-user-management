@@ -49,6 +49,9 @@ _CLIENT_CONFIG = Config(
 
 _CLIENT = None
 
+# id -> name for every security profile, rebuilt once per invocation.
+_PROFILE_MAP = None
+
 
 def client():
     """Return the shared Amazon Connect client, created on first use."""
@@ -244,16 +247,35 @@ def security_profile_ids_for_names(names):
     return list(dict.fromkeys(resolved))
 
 
+def security_profile_map():
+    """Return an id -> name map of every security profile, once per invocation.
+
+    Cached for the life of the execution environment's current request. Building a
+    SCIM user resource needs this map, so listing a page of users previously swept
+    every security profile once per user: a page of N users cost 2N+1 Connect calls
+    against a quota of 2 requests per second. The set of profiles does not change
+    during a single request, so one sweep is enough.
+
+    :func:`reset_caches` clears it; the handler calls that at the start of every
+    invocation so a warm container never serves a stale map.
+    """
+    global _PROFILE_MAP  # noqa: PLW0603
+    if _PROFILE_MAP is None:
+        _PROFILE_MAP = {summary["Id"]: summary["Name"] for summary in iter_security_profiles()}
+    return _PROFILE_MAP
+
+
+def reset_caches():
+    """Drop per-invocation caches. Called at the start of each request."""
+    global _PROFILE_MAP  # noqa: PLW0603
+    _PROFILE_MAP = None
+
+
 def security_profile_names_for_ids(profile_ids):
     """Resolve security profile ids to names for the SCIM ``entitlements`` value."""
     if not profile_ids:
         return []
-    wanted = set(profile_ids)
-    by_id = {
-        summary["Id"]: summary["Name"]
-        for summary in iter_security_profiles()
-        if summary["Id"] in wanted
-    }
+    by_id = security_profile_map()
     return [by_id[profile_id] for profile_id in profile_ids if profile_id in by_id]
 
 

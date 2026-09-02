@@ -1,0 +1,78 @@
+name: CI
+
+# Without this, none of the checks below run anywhere. The test suite includes a
+# guard that the three deployments' handler copies have not drifted apart, and that
+# guard is only meaningful if something executes it on every change.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lambda-handlers:
+    name: Lambda handlers (pytest, ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Install pinned dev dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+      - name: Lint
+        run: |
+          ruff check .
+          ruff format --check .
+      - name: Tests
+        run: pytest tests/unit -v
+      - name: CloudFormation template
+        run: cfn-lint CloudFormation/user_management_cloudformation.yaml
+
+  cdk:
+    name: CDK (build, tests, synth with cdk-nag)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cdk_source
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      # No package-lock.json is committed, so npm ci is unavailable and npm install
+      # resolves the transitive graph. Direct dependencies are exact-pinned.
+      - name: Install
+        run: npm install --no-fund --no-audit
+      - name: Typecheck
+        run: npx tsc --noEmit
+      - name: Tests
+        run: npx jest
+      # cdk-nag runs during synth and fails it on any unacknowledged finding, so
+      # this covers both identity providers.
+      - name: Synth (okta)
+        run: npx cdk synth --quiet
+      - name: Synth (azure)
+        run: npx cdk synth --quiet -c idp_type=azure
+
+  terraform:
+    name: Terraform (validate, fmt)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Terraform
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+      - name: Format
+        run: terraform fmt -check -recursive
+      - name: Validate
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate

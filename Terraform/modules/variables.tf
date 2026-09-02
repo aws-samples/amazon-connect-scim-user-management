@@ -68,3 +68,15 @@ variable "api_token_length" {
     error_message = "api_token_length must be between 32 and 256."
   }
 }
+
+variable "manage_apigw_account_settings" {
+  type        = bool
+  default     = true
+  description = "Create the account-level API Gateway CloudWatch role. This is an account-and-region singleton; set false when another deployment in the same account already owns it."
+}
+
+variable "lambda_log_retention_days" {
+  type        = number
+  default     = 365
+  description = "Retention for the Lambda log groups. These logs record usernames, so they are not kept indefinitely."
+}

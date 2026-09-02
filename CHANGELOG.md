@@ -39,22 +39,24 @@ a live Amazon Connect instance.
 -   `DELETE /Users/{id}`, and SCIM-conformant error responses
     (`urn:ietf:params:scim:api:messages:2.0:Error` with `scimType`) in place of
     unhandled exceptions surfacing as HTTP 502.
--   Test suite: 242 Python tests and 38 CDK assertion tests. The upstream tree
-    carried no test file at all. Two deliberate choices in there: the Amazon Connect
-    fake models the `SearchUsers` index lag, because an instantly-consistent fake
-    hides a real class of bug; and `tests/unit/test_handler_copies.py` compares
-    every per-deployment copy of the handler modules against the canonical
-    `cdk_source/lambdas` version and fails on any byte difference. Note that the
-    repository has no CI, so that guard only fires when someone runs the suite
-    locally -- wiring it into a workflow is an open item.
+-   Test suite: 250 Python tests and 40 CDK assertion tests, run by CI on every pull
+    request. The upstream tree carried no test file at all. Two deliberate choices in
+    there: the Amazon Connect fake models the `SearchUsers` index lag, because an
+    instantly-consistent fake hides a real class of bug; and
+    `tests/unit/test_handler_copies.py` compares every per-deployment copy of the
+    handler modules against the canonical `cdk_source/lambdas` version and fails on
+    any byte difference.
+-   **CI** (`.github/workflows/ci.yml`): the Python suite, `ruff`, `cfn-lint`, the CDK
+    build, `jest`, a `cdk synth` per identity provider, and `terraform validate`/`fmt`
+    on every pull request and push to `main`.
 -   cdk-nag acknowledgements with a written justification per rule. cdk-nag was
     already present but had no suppressions, so `cdk synth` reported findings with
     no recorded position on any of them.
 -   API Gateway access logging with a one-year retention log group in all three
     deployments, and a log format that omits the caller and every header so the
-    bearer token cannot reach it. The solution Lambdas still use implicit log
-    groups, which never expire -- adding managed log groups for them is an open
-    item.
+    bearer token cannot reach it. Every solution Lambda also has a managed log group
+    with one-year retention, replacing the implicit groups that never expired. The
+    group names cannot collide with logs an earlier deployment left behind.
 -   A default security profile parameter for the profile assigned when the IdP
     sends no `entitlements`, in all three deployments, plus `api_token_length` in
     Terraform.
@@ -231,27 +233,74 @@ A pre-merge review of this branch found defects in the new code, fixed here:
     cdk-nag `AwsSolutions-APIG4` acknowledgement matched none of the nine findings
     the pack actually produces.
 
+### Resolved from the previous open-items list
+
+These were deferred in the first cut of this release and are implemented here. Each
+was done in the way that leaves observable behaviour unchanged, which in two cases
+is not the way the open item proposed:
+
+-   **Lambda timeouts no longer diverge.** They are 900 seconds for the provisioning
+    function in all three deployments (CloudFormation was 30) and 10 for the
+    authorizer. The open item proposed harmonising *below* the API Gateway
+    integration timeout; that is the wrong direction. The gateway limit is 29
+    seconds and cannot be raised, so a Lambda timeout under it would kill a
+    membership batch part-way through its writes, leaving Amazon Connect half
+    updated with no record of where it stopped. A generous Lambda timeout lets the
+    writes finish even after the gateway has stopped waiting. What the identity
+    provider observes is the gateway timeout either way; what changes is whether the
+    work completes.
+-   **`GET /Users` no longer issues 2N+1 Amazon Connect calls.** The
+    security-profile-name lookup is now resolved once per request and memoised
+    instead of once per user, taking the page from 2N+1 to N+2 calls (measured: 10
+    users = 12 calls, 25 = 27, 50 = 52). The open item proposed sourcing the page
+    from `SearchUsers`, which would have traded the strongly consistent read for an
+    index-backed one; memoisation gets the same reduction with no consistency
+    change. Page size is now derived from the remaining budget rather than left at a
+    round number: `count` is clamped to 40 and defaults to 25, from the 29-second
+    gateway limit at 2 requests per second.
+-   **Terraform creates the API Gateway CloudWatch role**, so its access logging no
+    longer depends on an account-wide setting only the other two deployments
+    configure. Because `aws_api_gateway_account` is an account-and-Region singleton,
+    it is gated behind `manage_apigw_account_settings` (default `true`); set it
+    `false` when another deployment in the account already owns that setting.
+-   **CI.** `.github/workflows/ci.yml` runs the Python suite, `ruff`, `cfn-lint`,
+    the CDK build, `jest`, a `cdk synth` per identity provider, and
+    `terraform validate`/`fmt` on every pull request and push to `main`. This is
+    what makes the handler-copy drift guard an actual guard; previously it fired
+    only if a contributor ran the suite locally. `requirements-dev.txt` now pins
+    transitive dependencies as well, produced by freezing a clean resolution.
+-   **The solution Lambdas have managed log groups** with one-year retention in all
+    three deployments, replacing implicit groups that never expired. A CDK test
+    asserts every function references a log group defined by the template; the
+    pre-existing retention assertion was satisfied by the API Gateway access log
+    group alone and stayed green while the functions had none.
+
 ### Open items
 
-Deferred deliberately, each needing a decision rather than a mechanical fix:
+-   **In-place upgrade from 1.0.0 is still not supported**, and this release does not
+    fix it. `TokenStorageVersion` was added so that CloudFormation sends the custom
+    resource an `Update` at all, which is necessary but not sufficient. Testing the
+    upgrade end to end in a scratch account showed why: 1.0.0 owned
+    `/connect/scim-integration/api-token` as a template resource
+    (`AWS::SSM::Parameter` in CloudFormation, `StringParameter` in CDK), and that
+    resource is gone in 2.0.0, so CloudFormation deletes it during the cleanup phase
+    that runs *after* the rest of the update. The observed event order was the custom
+    resource rewriting the parameter as a SecureString at 01:28:37 and CloudFormation
+    deleting it at 01:28:39. **The stack reports `UPDATE_COMPLETE` with no token in
+    Parameter Store**, so the endpoint returns 401 for every request with nothing in
+    the stack events to say why. A deletion policy cannot be applied from the new
+    template, because the policy that governs a cleanup delete comes from the
+    template the resource still exists in. See the migration notes for the tested
+    recovery.
 
--   **In-place upgrade from 1.0.0** (see the migration note below). Fixing it means
-    scoping the parameter name per stack, which changes the operator contract.
--   **Lambda timeouts diverge** (CDK 900s, Terraform 600s, CloudFormation 30s) and
-    no deployment sets an API Gateway integration timeout, so all three inherit the
-    29-second default. Harmonising below 29s cuts the membership-change ceiling
-    substantially.
--   **`GET /Users` issues 2N+1 Amazon Connect calls** — a `DescribeUser` plus a
-    security-profile lookup per listed user — so a default-size page cannot
-    complete inside the integration timeout. Fixing it means sourcing the page from
-    `SearchUsers`, trading strong consistency for index consistency on that read.
--   **Terraform creates no API Gateway CloudWatch role**, so its access logging
-    depends on an account-wide setting the other two deployments create.
-    `aws_api_gateway_account` is an account-level singleton, so adding it needs a
-    decision about multi-stack ownership.
--   **No CI.** Nothing in the repository runs the test suites, `cfn-lint`,
-    `cdk synth` or `terraform validate`.
--   **The solution Lambdas use implicit log groups**, which never expire.
+### Verified in a scratch account
+
+Separately from the deployment testing of all three IaC options, the 1.0.0 → 2.0.0
+parameter handover above was reproduced directly: a stack matching 1.0.0's shape
+(token parameter as a template resource, generator overwriting it in place as a
+plaintext `StringList`) was deployed, then updated in place to 2.0.0's shape. That
+is where the silent-success failure and the recovery step below were established
+rather than reasoned about.
 
 ### Migration notes
 
@@ -263,13 +312,35 @@ Deferred deliberately, each needing a decision rather than a mechanical fix:
 -   **A fresh deployment** writes a new bearer token. Read it with
     `aws ssm get-parameter --with-decryption --name /connect/scim-integration/api-token`
     and enter it in the identity provider's provisioning settings.
--   **An in-place upgrade from 1.0.0 is not yet supported.** The previous release
-    owned the token parameter as a template resource; this one has its custom
-    resource create it as a SecureString. On `update-stack` CloudFormation deletes
-    the old parameter and the custom resource is not re-invoked, leaving no token
-    and a SCIM endpoint that returns 500 for every request. Deploy this release as
-    a new stack, or delete the parameter and the previous stack first. A fix is
-    tracked as an open item.
+-   **An in-place upgrade from 1.0.0 is not supported.** The previous release owned
+    the token parameter as a template resource; this one has its custom resource
+    create it as a SecureString. On `update-stack` the custom resource rewrites the
+    parameter and CloudFormation's cleanup phase then deletes it, because the
+    resource no longer exists in the template. **The stack reports success and the
+    SCIM endpoint returns 401 for every request**, because there is no token for the
+    authorizer to compare against.
+
+    Do this instead: delete the previous stack, or delete the parameter, and deploy
+    this release fresh.
+
+    If a stack has already been upgraded in place, recover it without a redeploy by
+    re-running the deployment with a different token length. That value reaches the
+    custom resource as a property, so changing it forces the `Update` to run again;
+    it finds the parameter absent and mints a new token. Tested end to end:
+
+        # CDK. 'apikeylength', not 'api_key_length': CloudFormation logical ids are
+        # alphanumeric, so CDK strips the underscores at synth time.
+        $ npx cdk deploy -c idp_type=<okta|azure> --parameters apikeylength=33
+
+    For CloudFormation, re-run `update-stack` with a different `ApiKeyLength` and
+    `UsePreviousValue=true` on the remaining parameters. The two deployments do not
+    share parameter names: the CloudFormation template declares `ApiKeyLength` and
+    `AmazonConnectInstanceId`, the CDK-synthesised one `apikeylength` and
+    `connectinstanceid`.
+
+    Then read the new token and enter it in the identity provider. The token value
+    changes in every one of these paths, so the identity provider needs updating
+    regardless of which you take.
 -   The `entitlements` attribute is returned as a multi-valued complex attribute
     (`[{"value": "Agent"}]`) rather than a list of plain strings. Both forms are
     accepted on input.

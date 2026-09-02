@@ -18,6 +18,8 @@ module "amazon_connect_user_mgmgt" {
   default_security_profile = var.default_security_profile
   api_token_length         = var.api_token_length
 
+  manage_apigw_account_settings = var.manage_apigw_account_settings
+
   # Set exactly one of these to true in your tfvars.
   IsOKTAIdpType  = var.IsOKTAIdpType
   IsAzureIdpType = var.IsAzureIdpType

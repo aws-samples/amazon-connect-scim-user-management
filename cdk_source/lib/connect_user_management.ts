@@ -78,6 +78,11 @@ export class ConnnectUserManagement extends Stack {
       default: 'Agent',
     });
 
+    // The functions otherwise write to implicit log groups that never expire, and
+    // these logs record usernames. CDK names these from the construct path, so
+    // creating them cannot collide with logs an earlier deployment left behind.
+    const lambdaLogRetention = RetentionDays.ONE_YEAR;
+
     // Customer-managed key for the API token. A dedicated key is used because
     // IAM policies cannot be scoped to the default aws/ssm key, so the authorizer
     // could not otherwise be granted decrypt access to this token alone.
@@ -117,6 +122,10 @@ export class ConnnectUserManagement extends Stack {
         memorySize: 512,
         functionName: 'connect-scim-user-management',
         role: SCIM_provisioning_lambda_role,
+        logGroup: new LogGroup(this, 'scim_provisioning_logs', {
+          retention: lambdaLogRetention,
+          removalPolicy: RemovalPolicy.DESTROY,
+        }),
         environment: {
           INSTANCE_ID: connect_instance_id.valueAsString,
           DEFAULT_ROUTING_PROFILE: default_routing_profile.valueAsString,
@@ -181,11 +190,16 @@ export class ConnnectUserManagement extends Stack {
       handler: 'lambda_authorizer.lambda_handler',
       description: 'Validates the SCIM API bearer token presented by the IdP application.',
       // An API Gateway authorizer must answer well inside the 29 second
-      // integration limit; it only reads one parameter.
+      // integration limit; it only reads one parameter, through a 5 minute cache.
+      // The same value is used in all three deployments.
       timeout: Duration.seconds(10),
       functionName: 'lambda-authorizer-scim-api-gw',
       memorySize: 256,
       role: lambda_authorizer_role,
+      logGroup: new LogGroup(this, 'lambda_authorizer_logs', {
+        retention: lambdaLogRetention,
+        removalPolicy: RemovalPolicy.DESTROY,
+      }),
       environment: {
         PARAMETER_NAME: API_TOKEN_PARAMETER_NAME,
       },
@@ -240,6 +254,10 @@ export class ConnnectUserManagement extends Stack {
         functionName: 'api-key-custom-resource-lambda-authorizer',
         memorySize: 256,
         role: api_key_generation_role,
+        logGroup: new LogGroup(this, 'api_key_generation_logs', {
+          retention: lambdaLogRetention,
+          removalPolicy: RemovalPolicy.DESTROY,
+        }),
         environment: {
           PARAMETER_NAME: API_TOKEN_PARAMETER_NAME,
           KMS_KEY_ID: api_token_key.keyArn,
@@ -288,6 +306,11 @@ export class ConnnectUserManagement extends Stack {
       resourceType: 'Custom::ScimApiToken',
       properties: {
         ApiLength: api_key_length.valueAsNumber,
+        // Bumped when the token's storage shape changes. Without a property that
+        // differs from the previous release, CloudFormation sends no Update at all
+        // and the handler never gets the chance to migrate a plaintext parameter
+        // left behind by 1.0.0.
+        TokenStorageVersion: 2,
       },
     });
 

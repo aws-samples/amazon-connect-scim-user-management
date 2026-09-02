@@ -23,12 +23,24 @@ from botocore.exceptions import ClientError
 
 
 class FakeSsm:
-    """Minimal in-memory Parameter Store."""
+    """Minimal in-memory Parameter Store.
+
+    Records the parameter Type as the real service does. Without it a plaintext
+    parameter left by the previous release is indistinguishable from a current
+    SecureString, which is the distinction the upgrade path turns on.
+    """
 
     def __init__(self, existing=None):
-        self.parameters = dict(existing or {})
+        # name -> (value, type)
+        self.parameters = {
+            name: (value, "SecureString") for name, value in (existing or {}).items()
+        }
         self.puts = []
         self.deletes = []
+
+    def seed_legacy(self, name, value):
+        """Store a parameter the way release 1.0.0 did: plaintext StringList."""
+        self.parameters[name] = (value, "StringList")
 
     def get_parameter(self, Name, WithDecryption=False):
         if Name not in self.parameters:
@@ -36,13 +48,14 @@ class FakeSsm:
                 {"Error": {"Code": "ParameterNotFound", "Message": "missing"}},
                 "GetParameter",
             )
-        return {"Parameter": {"Name": Name, "Value": self.parameters[Name]}}
+        value, param_type = self.parameters[Name]
+        return {"Parameter": {"Name": Name, "Value": value, "Type": param_type}}
 
     def put_parameter(self, Name, Value, Type, KeyId=None, Overwrite=False, Description=None):
         self.puts.append(
             {"Name": Name, "Value": Value, "Type": Type, "KeyId": KeyId, "Overwrite": Overwrite}
         )
-        self.parameters[Name] = Value
+        self.parameters[Name] = (Value, Type)
         return {"Version": len(self.puts)}
 
     def delete_parameter(self, Name):
@@ -152,20 +165,46 @@ class TestApply:
         with pytest.raises(ValueError, match="must be an integer"):
             api_token.apply("Create", {"ApiLength": "thirty-two"})
 
-    def test_update_retains_an_existing_token(self, ssm):
-        ssm.parameters[api_token.PARAMETER_NAME] = "already-configured"
+    def test_update_retains_an_existing_securestring(self, ssm):
+        ssm.parameters[api_token.PARAMETER_NAME] = ("already-configured", "SecureString")
         api_token.apply("Update", {"ApiLength": 32})
         # Rotating here would silently invalidate the value already entered in the
         # identity provider.
         assert ssm.puts == []
-        assert ssm.parameters[api_token.PARAMETER_NAME] == "already-configured"
+        assert ssm.parameters[api_token.PARAMETER_NAME][0] == "already-configured"
+
+    def test_update_rewrites_a_plaintext_parameter_from_the_previous_release(self, ssm):
+        # Release 1.0.0 stored the token as a plaintext StringList. Retaining that
+        # would leave the bearer token in clear text.
+        ssm.seed_legacy(api_token.PARAMETER_NAME, "plaintext-from-1.0.0")
+        api_token.apply("Update", {"ApiLength": 32})
+        assert len(ssm.puts) == 1
+        assert ssm.puts[0]["Type"] == "SecureString"
+        value, param_type = ssm.parameters[api_token.PARAMETER_NAME]
+        assert param_type == "SecureString"
+        assert value != "plaintext-from-1.0.0"
+
+    def test_create_refuses_when_the_parameter_already_exists(self, ssm):
+        # The name is not stack-scoped, so a second stack would otherwise overwrite
+        # the first stack's live token and start returning 401s to its IdP.
+        ssm.parameters[api_token.PARAMETER_NAME] = ("in-use-by-another-stack", "SecureString")
+        with pytest.raises(ValueError, match="already exists"):
+            api_token.apply("Create", {"ApiLength": 32})
+        assert ssm.puts == []
+        assert ssm.parameters[api_token.PARAMETER_NAME][0] == "in-use-by-another-stack"
+
+    def test_create_refuses_over_a_legacy_plaintext_parameter_too(self, ssm):
+        ssm.seed_legacy(api_token.PARAMETER_NAME, "plaintext-from-1.0.0")
+        with pytest.raises(ValueError, match="already exists"):
+            api_token.apply("Create", {"ApiLength": 32})
+        assert ssm.puts == []
 
     def test_update_regenerates_a_missing_token(self, ssm):
         api_token.apply("Update", {"ApiLength": 32})
         assert len(ssm.puts) == 1
 
     def test_delete_removes_the_parameter(self, ssm):
-        ssm.parameters[api_token.PARAMETER_NAME] = "token"
+        ssm.parameters[api_token.PARAMETER_NAME] = ("token", "SecureString")
         api_token.apply("Delete", {})
         assert ssm.deletes == [api_token.PARAMETER_NAME]
 
@@ -233,7 +272,7 @@ class TestCloudFormationEntryPoint:
         assert "ApiLength" in http.requests[0]["body"]["Reason"]
 
     def test_delete_posts_success(self, ssm, http):
-        ssm.parameters[api_token.PARAMETER_NAME] = "token"
+        ssm.parameters[api_token.PARAMETER_NAME] = ("token", "SecureString")
         custom_resource_lambda.lambda_handler(
             event("Delete", physical_id=api_token.PARAMETER_NAME), FakeContext()
         )

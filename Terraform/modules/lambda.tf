@@ -9,7 +9,14 @@ resource "aws_lambda_function" "connect_usermgmt_lambda" {
     mode = "PassThrough"
   }
   reserved_concurrent_executions = -1
-  timeout                        = 600
+  # A membership patch makes two throttled Connect calls per member; matched to the
+  # other deployments so the work completes rather than being cut off part-way.
+  timeout     = 900
+  memory_size = 512
+  logging_config {
+    log_format = "Text"
+    log_group  = aws_cloudwatch_log_group.usermgmt_lambda.name
+  }
   environment {
     variables = {
       INSTANCE_ID              = var.connect_instance_id
@@ -27,7 +34,13 @@ resource "aws_lambda_function" "lambda_authorizer" {
   handler                        = "lambda_authorizer.lambda_handler"
   runtime                        = "python3.14"
   reserved_concurrent_executions = -1
-  timeout                        = 600
+  # One cached GetParameter, answered inside API Gateway's 29s window.
+  timeout     = 10
+  memory_size = 512
+  logging_config {
+    log_format = "Text"
+    log_group  = aws_cloudwatch_log_group.authorizer_lambda.name
+  }
   tracing_config {
     mode = "PassThrough"
   }

@@ -70,3 +70,9 @@ variable "api_token_length" {
   default     = 32
   description = "Length of the generated SCIM API bearer token."
 }
+
+variable "manage_apigw_account_settings" {
+  type        = bool
+  default     = true
+  description = "Create the account-level API Gateway CloudWatch role. Set false when another deployment in the same account already owns it."
+}

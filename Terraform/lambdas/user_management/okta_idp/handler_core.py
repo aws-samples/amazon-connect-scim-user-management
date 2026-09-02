@@ -68,6 +68,9 @@ def _request_summary(event, provider):
 def handle(event, provider):
     """Route one API Gateway proxy event to the matching SCIM operation."""
     LOGGER.info("Received SCIM request: %s", json.dumps(_request_summary(event, provider)))
+    # Lambda reuses the execution environment, so per-invocation caches have to be
+    # dropped here rather than relying on a cold start.
+    directory.reset_caches()
     try:
         return _route(event, provider)
     except scim.ScimError as error:
