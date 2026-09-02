@@ -301,7 +301,10 @@ export class ConnnectUserManagement extends Stack {
     });
 
     const scim_api_access_logs = new LogGroup(this, 'scim_api_access_logs', {
-      retention: RetentionDays.THREE_MONTHS,
+      // Access logs are the audit trail for authentication attempts against the
+      // SCIM endpoint, so they are retained for a year, matching the
+      // CloudFormation and Terraform deployments.
+      retention: RetentionDays.ONE_YEAR,
       removalPolicy: RemovalPolicy.DESTROY,
     });
 

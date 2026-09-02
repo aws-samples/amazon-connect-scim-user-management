@@ -28,11 +28,30 @@ resource "aws_api_gateway_stage" "stage" {
   rest_api_id          = aws_api_gateway_rest_api.connect_api.id
   deployment_id        = aws_api_gateway_deployment.api_deployment.id
   xray_tracing_enabled = true
+
+  # The log group below existed but was never referenced, so no access logs were
+  # written. The format omits the caller identity and any header, so the bearer
+  # token cannot reach the log.
+  access_log_settings {
+    destination_arn = aws_cloudwatch_log_group.connect_access_log.arn
+    format = jsonencode({
+      requestId      = "$context.requestId"
+      ip             = "$context.identity.sourceIp"
+      requestTime    = "$context.requestTime"
+      httpMethod     = "$context.httpMethod"
+      resourcePath   = "$context.resourcePath"
+      status         = "$context.status"
+      protocol       = "$context.protocol"
+      responseLength = "$context.responseLength"
+    })
+  }
 }
 
 resource "aws_cloudwatch_log_group" "connect_access_log" {
-  name              = "ConnectUserMgmtApiAccessLog"
-  retention_in_days = 7
+  name = "ConnectUserMgmtApiAccessLog"
+  # Access logs are the audit trail for authentication attempts against the SCIM
+  # endpoint, so they are retained for a year.
+  retention_in_days = 365
 }
 
 resource "aws_api_gateway_method_settings" "apisetttings" {
@@ -41,6 +60,9 @@ resource "aws_api_gateway_method_settings" "apisetttings" {
   method_path = "*/*"
   settings {
     metrics_enabled = true
-    logging_level   = "INFO"
+    logging_level   = "ERROR"
+    # Data tracing writes full request and response bodies, including the
+    # Authorization header, to CloudWatch.
+    data_trace_enabled = false
   }
 }

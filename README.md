@@ -171,7 +171,7 @@ Note the following **Output** after the deployment completes:
 * The SCIM solution creates 3 Lambda function, download the below Lambda code
     [Authorizer Lambda code](./CloudFormation/lambdas/lambda_authorizer/lambda_authorizer.py)
 
-    [API key Lambda code](./CloudFormation/lambdas/custom_resource/custom_resource_lambda.py)
+    [API key Lambda code](./CloudFormation/lambdas/custom_resource/) — zip `custom_resource_lambda.py` **and** `api_token.py` together
 
     [OKTA User management Lambda code](./CloudFormation/lambdas/user_management/okta_idp/user_management_lambda.py)
 

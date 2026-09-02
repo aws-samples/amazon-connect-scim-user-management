@@ -231,6 +231,19 @@ describe('API Gateway', () => {
     });
   });
 
+  it('retains access logs for a year, matching the other deployments', () => {
+    const groups = Object.values(synth().findResources('AWS::Logs::LogGroup'));
+    expect(groups.map((g) => g.Properties.RetentionInDays)).toContain(365);
+  });
+
+  it('does not log the caller identity in the access log format', () => {
+    // The bearer token arrives in a header; the access log format must not
+    // include headers or the caller.
+    const stages = JSON.stringify(synth().findResources('AWS::ApiGateway::Stage'));
+    expect(stages).not.toContain('$context.identity.caller');
+    expect(stages).not.toContain('Authorization');
+  });
+
   it('throttles through a usage plan', () => {
     synth().hasResourceProperties('AWS::ApiGateway::UsagePlan', {
       UsagePlanName: 'scim-api-usage-plan',

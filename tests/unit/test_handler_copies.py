@@ -23,9 +23,7 @@ CANONICAL_USER_MANAGEMENT = REPO_ROOT / "cdk_source" / "lambdas" / "user_managem
 CANONICAL_AUTHORIZER = (
     REPO_ROOT / "cdk_source" / "lambdas" / "lambda_authorizer" / "lambda_authorizer.py"
 )
-CANONICAL_CUSTOM_RESOURCE = (
-    REPO_ROOT / "cdk_source" / "lambdas" / "custom_resource" / "custom_resource.py"
-)
+CANONICAL_API_TOKEN = REPO_ROOT / "cdk_source" / "lambdas" / "custom_resource" / "api_token.py"
 
 SHARED_MODULES = ["scim.py", "connect_directory.py", "handler_core.py"]
 
@@ -41,8 +39,8 @@ AUTHORIZER_COPIES = [
     REPO_ROOT / "Terraform" / "lambdas" / "lambda_authorizer" / "lambda_authorizer.py",
 ]
 
-CUSTOM_RESOURCE_COPIES = [
-    REPO_ROOT / "CloudFormation" / "lambdas" / "custom_resource" / "custom_resource_lambda.py",
+API_TOKEN_COPIES = [
+    REPO_ROOT / "CloudFormation" / "lambdas" / "custom_resource" / "api_token.py",
 ]
 
 
@@ -74,12 +72,45 @@ def test_authorizer_matches_canonical(copy):
     )
 
 
-@pytest.mark.parametrize("copy", CUSTOM_RESOURCE_COPIES, ids=_ids(CUSTOM_RESOURCE_COPIES))
-def test_custom_resource_matches_canonical(copy):
+@pytest.mark.parametrize("copy", API_TOKEN_COPIES, ids=_ids(API_TOKEN_COPIES))
+def test_api_token_module_matches_canonical(copy):
     assert copy.exists(), f"{copy} is missing"
-    assert digest(copy) == digest(CANONICAL_CUSTOM_RESOURCE), (
-        f"{copy.relative_to(REPO_ROOT)} has drifted from the canonical custom resource."
+    assert digest(copy) == digest(CANONICAL_API_TOKEN), (
+        f"{copy.relative_to(REPO_ROOT)} has drifted from the canonical api_token module."
     )
+
+
+def test_custom_resource_entry_points_use_the_right_response_protocol():
+    """The two entry points must not be interchangeable.
+
+    A raw AWS::CloudFormation::CustomResource has no framework in front of it and
+    must post its own result to ResponseURL. The CDK Provider framework owns that
+    protocol and the handler behind it must return instead. Swapping them leaves a
+    stack in CREATE_IN_PROGRESS until the resource times out.
+    """
+    cdk_entry = (
+        REPO_ROOT / "cdk_source" / "lambdas" / "custom_resource" / "custom_resource.py"
+    ).read_text()
+    cfn_entry = (
+        REPO_ROOT / "CloudFormation" / "lambdas" / "custom_resource" / "custom_resource_lambda.py"
+    ).read_text()
+
+    # These check code, not prose: both docstrings discuss ResponseURL, so the
+    # assertions look for the subscript that would actually read it and for the
+    # HTTP client that would actually post.
+    assert "PhysicalResourceId" in cdk_entry, "the CDK handler must return a result"
+    assert 'event["ResponseURL"]' not in cdk_entry, (
+        "the CDK handler must not post to ResponseURL; the Provider framework does"
+    )
+    assert "import urllib3" not in cdk_entry
+
+    assert 'event["ResponseURL"]' in cfn_entry, (
+        "a raw custom resource must post its own result, or the stack waits out "
+        "the resource timeout"
+    )
+    assert "import urllib3" in cfn_entry
+    assert '"PUT"' in cfn_entry
+    assert '"FAILED"' in cfn_entry, "a failure must be reported, not just raised"
 
 
 @pytest.mark.parametrize("copy_dir", USER_MANAGEMENT_COPIES, ids=_ids(USER_MANAGEMENT_COPIES))

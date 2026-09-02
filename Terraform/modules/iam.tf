@@ -70,20 +70,38 @@ resource "aws_iam_policy" "lambda_auth_policy" {
   policy = data.aws_iam_policy_document.connect_auth_policy.json
 }
 
+locals {
+  lambda_basic_execution_policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
 resource "aws_iam_role" "connect_user_management_role" {
   name               = "connect_user_management_lambda_role"
   assume_role_policy = data.aws_iam_policy_document.lambda-assume-role-policy.json
-  managed_policy_arns = [
-    aws_iam_policy.connect_policy.arn,
-    "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
-  ]
+}
+
+# managed_policy_arns on aws_iam_role is deprecated in AWS provider 6.x; explicit
+# attachment resources are the replacement.
+resource "aws_iam_role_policy_attachment" "connect_user_management_connect" {
+  role       = aws_iam_role.connect_user_management_role.name
+  policy_arn = aws_iam_policy.connect_policy.arn
+}
+
+resource "aws_iam_role_policy_attachment" "connect_user_management_basic" {
+  role       = aws_iam_role.connect_user_management_role.name
+  policy_arn = local.lambda_basic_execution_policy_arn
 }
 
 resource "aws_iam_role" "connect_lambda_authorizer_role" {
   name               = "connect_lambda_authorizer_role"
   assume_role_policy = data.aws_iam_policy_document.lambda-assume-role-policy.json
-  managed_policy_arns = [
-    aws_iam_policy.lambda_auth_policy.arn,
-    "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
-  ]
+}
+
+resource "aws_iam_role_policy_attachment" "connect_authorizer_ssm" {
+  role       = aws_iam_role.connect_lambda_authorizer_role.name
+  policy_arn = aws_iam_policy.lambda_auth_policy.arn
+}
+
+resource "aws_iam_role_policy_attachment" "connect_authorizer_basic" {
+  role       = aws_iam_role.connect_lambda_authorizer_role.name
+  policy_arn = local.lambda_basic_execution_policy_arn
 }

@@ -200,6 +200,14 @@ Resources:
           - EDGE
       Name: !Sub "${AWS::StackName}-apigw"
 
+  SCIMAPIAccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/apigateway/${AWS::StackName}-access-logs"
+      # Access logs are the audit trail for authentication attempts against the
+      # SCIM endpoint, so they are retained for a year.
+      RetentionInDays: 365
+
   SCIMAPIStage:
     Type: AWS::ApiGateway::Stage
     Properties:
@@ -208,6 +216,21 @@ Resources:
       DeploymentId:
         Ref: SCIMProvisioningAPIGWdeployment
       StageName: dev
+      TracingEnabled: true
+      AccessLogSetting:
+        DestinationArn: !GetAtt SCIMAPIAccessLogGroup.Arn
+        # No caller identity and no headers, so the bearer token cannot reach the log.
+        Format: '{"requestId":"$context.requestId","ip":"$context.identity.sourceIp","requestTime":"$context.requestTime","httpMethod":"$context.httpMethod","resourcePath":"$context.resourcePath","status":"$context.status","protocol":"$context.protocol","responseLength":"$context.responseLength"}'
+      MethodSettings:
+        - ResourcePath: "/*"
+          HttpMethod: "*"
+          LoggingLevel: ERROR
+          MetricsEnabled: true
+          # Data tracing writes full request and response bodies, including the
+          # Authorization header, to CloudWatch.
+          DataTraceEnabled: false
+    DependsOn:
+      - SCIMProvisioningAPIGWaccount
 
   SCIMProvisioningAPIGWaccount:
     Type: "AWS::ApiGateway::Account"
@@ -253,7 +276,17 @@ Resources:
       KeyPolicy:
         Version: 2012-10-17
         Statement:
-          - Sid: AllowAccountUseViaIam
+          # This is the default key policy AWS KMS applies when none is supplied:
+          # it delegates authorization to IAM rather than granting anyone access
+          # directly, and omitting it can leave the key unmanageable. The
+          # principals that actually use the key are granted kms:Encrypt and
+          # kms:Decrypt on it through their own role policies, below.
+          #
+          # For production, consider splitting this into a key-administrator
+          # statement (kms:Create*, kms:Put*, kms:ScheduleKeyDeletion, ...) held by
+          # a separate principal from the key users. See "Key policies in AWS KMS"
+          # in the AWS KMS Developer Guide.
+          - Sid: DelegateToIam
             Effect: Allow
             Principal:
               AWS: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:root"

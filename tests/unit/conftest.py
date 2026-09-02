@@ -18,6 +18,9 @@ from botocore.exceptions import ClientError
 LAMBDA_ROOT = Path(__file__).resolve().parents[2] / "cdk_source" / "lambdas"
 for source_dir in ("user_management", "lambda_authorizer", "custom_resource"):
     sys.path.insert(0, str(LAMBDA_ROOT / source_dir))
+# The CloudFormation custom-resource entry point speaks a different response
+# protocol than the CDK one, so both are imported and tested.
+sys.path.insert(0, str(LAMBDA_ROOT.parents[1] / "CloudFormation" / "lambdas" / "custom_resource"))
 
 # The handler modules read their configuration at import time.
 os.environ.setdefault("INSTANCE_ID", "11111111-2222-3333-4444-555555555555")
