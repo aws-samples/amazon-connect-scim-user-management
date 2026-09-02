@@ -290,3 +290,26 @@ class TestCloudFormationEntryPoint:
             custom_resource_lambda.lambda_handler(event("Create"), FakeContext())
         # The ResponseURL is a capability: anyone holding it can forge a response.
         assert "signed" not in caplog.text
+
+    def test_the_generated_token_is_never_logged(self, ssm, http, caplog):
+        """The token value must not reach CloudWatch on any request type.
+
+        A security scanner flags every logger call in ``api_token`` whose message
+        mentions "token", because the word appears in the format string. Each one
+        interpolates the parameter *name* only. This test is what makes that a
+        defensible disposition rather than an assertion: if a value ever starts
+        being logged, it fails.
+        """
+        for request_type in ("Create", "Update"):
+            ssm.parameters.clear()
+            ssm.puts.clear()
+            caplog.clear()
+            with caplog.at_level(logging.INFO):
+                custom_resource_lambda.lambda_handler(event(request_type), FakeContext())
+            written = [put for put in ssm.puts if put["Name"] == api_token.PARAMETER_NAME]
+            assert written, f"{request_type} should have written a token"
+            token = written[-1]["Value"]
+            assert len(token) >= api_token.MIN_TOKEN_LENGTH
+            assert token not in caplog.text, f"the token leaked into the log on {request_type}"
+            # The parameter name is deliberately logged; that is not a credential.
+            assert api_token.PARAMETER_NAME in caplog.text

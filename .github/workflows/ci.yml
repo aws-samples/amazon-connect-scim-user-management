@@ -8,6 +8,10 @@ on:
   push:
     branches: [main]
 
+# Actions are pinned to full commit SHAs, not tags. A tag is mutable, so
+# whoever controls the action repository can change what a pinned tag resolves
+# to; a SHA cannot be moved. The trailing comment records the human-readable
+# version, which is what to bump when updating.
 permissions:
   contents: read
 
@@ -16,8 +20,8 @@ jobs:
     name: Lambda handlers (pytest, ruff)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.14'
       - name: Install pinned dev dependencies
@@ -40,8 +44,8 @@ jobs:
       run:
         working-directory: cdk_source
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '22'
       # No package-lock.json is committed, so npm ci is unavailable and npm install
@@ -66,8 +70,8 @@ jobs:
       run:
         working-directory: Terraform
     steps:
-      - uses: actions/checkout@v4
-      - uses: hashicorp/setup-terraform@v3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
           terraform_version: 1.9.8
       - name: Format
