@@ -1,6 +1,13 @@
 variable "connect_instance_id" {
   type        = string
   description = "The Connect Instance Id for user management"
+
+  # Interpolated into the provisioning role's resource ARNs, so an unconstrained
+  # value ("*") would widen the role to every Connect instance in the account.
+  validation {
+    condition     = can(regex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", var.connect_instance_id))
+    error_message = "connect_instance_id must be an Amazon Connect instance UUID."
+  }
 }
 
 variable "IsOKTAIdpType" {
@@ -43,4 +50,33 @@ variable "swagger_file_path" {
 variable "default_routing_profile" {
   type    = string
   default = "Basic Routing Profile"
+}
+
+variable "default_security_profile" {
+  type        = string
+  default     = "Agent"
+  description = "Security profile assigned when the IdP supplies no entitlements."
+}
+
+variable "api_token_length" {
+  type        = number
+  default     = 32
+  description = "Length of the generated SCIM API bearer token."
+
+  validation {
+    condition     = var.api_token_length >= 32 && var.api_token_length <= 256
+    error_message = "api_token_length must be between 32 and 256."
+  }
+}
+
+variable "manage_apigw_account_settings" {
+  type        = bool
+  default     = true
+  description = "Create the account-level API Gateway CloudWatch role. This is an account-and-region singleton; set false when another deployment in the same account already owns it."
+}
+
+variable "lambda_log_retention_days" {
+  type        = number
+  default     = 365
+  description = "Retention for the Lambda log groups. These logs record usernames, so they are not kept indefinitely."
 }

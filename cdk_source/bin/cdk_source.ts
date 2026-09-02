@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
-import { ConnnectUserManagement } from '../lib/connect_user_management';
+import { Validations } from 'aws-cdk-lib';
 import { AwsSolutionsChecks } from 'cdk-nag';
-import { Aspects } from 'aws-cdk-lib';
+import { Construct } from 'constructs';
+import { ConnnectUserManagement } from '../lib/connect_user_management';
 
 const app = new cdk.App();
-Aspects.of(app).add(new AwsSolutionsChecks({ verbose: true }))
-new ConnnectUserManagement(app, 'ConnnectUserManagement', {
+const stack = new ConnnectUserManagement(app, 'ConnnectUserManagement', {
   /* If you don't specify 'env', this stack will be environment-agnostic.
    * Account/Region-dependent features and context lookups will not work,
    * but a single synthesized template can be deployed anywhere. */
@@ -15,10 +15,83 @@ new ConnnectUserManagement(app, 'ConnnectUserManagement', {
   /* Uncomment the next line to specialize this stack for the AWS Account
    * and Region that are implied by the current CLI configuration. */
   // env: { account: process.env.CDK_DEFAULT_ACCOUNT, region: process.env.CDK_DEFAULT_REGION },
-
-  /* Uncomment the next line if you know exactly what Account and Region you
-   * want to deploy the stack to. */
-  // env: { account: '123456789012', region: 'us-east-1' },
-
-  /* For more information, see https://docs.aws.amazon.com/cdk/latest/guide/environments.html */
 });
+
+// cdk-nag v3 registers rule packs through the CDK validation framework rather
+// than as an Aspect, and suppressions are recorded as rule acknowledgements.
+Validations.of(app).addPlugins(new AwsSolutionsChecks(app, { verbose: true }));
+
+/**
+ * Record a cdk-nag rule acknowledgement on a construct and its children.
+ *
+ * `Validations.acknowledge()` cannot be used for cdk-nag's granular IAM4/IAM5
+ * rule ids. It splits the id on '::' and rejects anything with more than two
+ * parts, while those ids embed both a '::' delimiter and CloudFormation
+ * pseudo-parameter tokens such as `<AWS::Partition>` — for example
+ * `AwsSolutions-IAM5[Resource::arn:<AWS::Partition>:connect:...]`. Writing the
+ * acknowledged-rules metadata directly is the same thing `acknowledge()` records
+ * and is the contract cdk-nag reads, minus the id validation that rejects these
+ * ids. Non-granular rules could use `acknowledge()`, but keeping one mechanism
+ * avoids two ways of expressing the same thing.
+ */
+function acknowledgeNagRules(scope: Construct, rules: { id: string; reason: string }[]): void {
+  for (const rule of rules) {
+    scope.node.addMetadata(Validations.ACKNOWLEDGED_RULES_METADATA_KEY, {
+      [rule.id]: rule.reason,
+    });
+  }
+}
+
+// The granular ids below embed specific policy ARNs and logical ids. If one of
+// those changes, the id stops matching and the finding resurfaces at synth time
+// rather than the suppression silently widening.
+const CONNECT_INSTANCE_ARN =
+  'arn:<AWS::Partition>:connect:<AWS::Region>:<AWS::AccountId>:instance/<connectinstanceid>';
+
+acknowledgeNagRules(stack, [
+  {
+    id: 'AwsSolutions-IAM4[Policy::arn:<AWS::Partition>:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole]',
+    reason:
+      'AWSLambdaBasicExecutionRole grants only CloudWatch Logs write access for each function’s own log group. Every function has its own dedicated role and no other managed policies are attached.',
+  },
+  {
+    id: 'AwsSolutions-IAM4[Policy::arn:<AWS::Partition>:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs]',
+    reason:
+      'Role is created by the aws-cdk-lib RestApi construct so API Gateway can write the access and execution logs this stack enables. It grants log writes only.',
+  },
+  {
+    id: `AwsSolutions-IAM5[Resource::${CONNECT_INSTANCE_ARN}/agent/*]`,
+    reason:
+      'Amazon Connect user (agent) ARNs are created at runtime by the identity provider, so they cannot be enumerated at deploy time. The wildcard is confined to the agent path of the single Connect instance supplied as a stack parameter, and the actions are limited to DescribeUser, DeleteUser and UpdateUserSecurityProfiles.',
+  },
+  {
+    id: `AwsSolutions-IAM5[Resource::${CONNECT_INSTANCE_ARN}/security-profile/*]`,
+    reason:
+      'Security profiles are administered outside this solution and are referenced by name in the SCIM payload, so their ARNs are not known at deploy time. The wildcard is confined to the security-profile path of the single Connect instance supplied as a stack parameter.',
+  },
+  {
+    id: `AwsSolutions-IAM5[Resource::${CONNECT_INSTANCE_ARN}/routing-profile/*]`,
+    reason:
+      'Routing profiles are administered outside this solution and are referenced by name in the SCIM payload, so their ARNs are not known at deploy time. The wildcard is confined to the routing-profile path of the single Connect instance supplied as a stack parameter.',
+  },
+  {
+    id: 'AwsSolutions-IAM5[Resource::<apikeygenerationcustomresource91BE48A1.Arn>:*]',
+    reason:
+      'Generated by the aws-cdk-lib custom-resource provider framework so it can invoke any published version or alias of its own onEvent handler. The wildcard is scoped to that single function ARN.',
+  },
+  {
+    id: 'AwsSolutions-APIG2',
+    reason:
+      'Request validation happens in the handler, which has to interpret SCIM payloads (filters and PatchOp operation shapes) that vary per identity provider and cannot be expressed as an API Gateway JSON Schema model.',
+  },
+  {
+    id: 'AwsSolutions-APIG3',
+    reason:
+      'No WAF web ACL is attached. This is a reference implementation; the README documents attaching a WAF with an IP allow list for the identity provider’s egress ranges as a production hardening step.',
+  },
+  {
+    id: 'AwsSolutions-COG4',
+    reason:
+      'Authorization uses a Lambda token authorizer rather than a Cognito user pool, because the caller is an identity provider’s SCIM client presenting a bearer token, not an end user.',
+  },
+]);

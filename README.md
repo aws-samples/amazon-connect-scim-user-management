@@ -2,6 +2,33 @@
 
 The solution is recommened to be used in conjunction with an Amazon Connect instance deployed with SAML authentication to manage users and security profiles that is integrated with an identity provider’s System for Cross-domain Identity Management (SCIM) application. We will also walk through additional guardrails you need to implement to ensure this solution controls CRUD of users and associated permissions within the Amazon Connect instance.
 
+## How it fits together
+
+This solution **is a SCIM server**. It publishes a SCIM 2.0 endpoint (API Gateway + Lambda) that your identity provider provisions *into*, and the Lambda translates those SCIM requests directly into Amazon Connect user API calls. The identity provider is the SCIM client; this endpoint is the SCIM service provider.
+
+Nothing else sits in that path. In particular this solution does not involve AWS IAM Identity Center, which Amazon Connect cannot use as an identity source — a Connect instance is created with `SAML`, `CONNECT_MANAGED` or `EXISTING_DIRECTORY` identity management, and there is no Identity Center option. If you are reading AWS or Okta guidance about a SCIM `PatchGroup` deprecation, that guidance concerns custom SCIM applications pointed at the Identity Center SCIM endpoint (`scim.<region>.amazonaws.com/.../scim/v2`) and does not describe this integration.
+
+### Group membership support
+
+Group membership is a common source of "user provisioning works but group changes never apply" reports. Every request to `/Groups` used to return a fixed stub — `totalResults: 1` with an empty `Resources` array — so group pushes and membership changes were accepted and discarded. There was also no pagination: `itemsPerPage` was hardcoded and `ListUsers` was called without following `NextToken`, hiding every user past the first page.
+
+Now:
+
+* `/Groups` is real. An Amazon Connect **security profile** is a SCIM Group, and its members are the users holding that profile.
+* `PATCH /Groups/{id}` honours all three `members` operations from RFC 7644 §3.5.2 — `add`, `remove` (including a `remove` with no value, which clears every current member), and `replace`.
+* A `replace` is applied as the add/remove delta between current and requested membership, so the group is never emptied on the way to its new state and an unchanged member is never rewritten.
+* Lists paginate per RFC 7644 §3.4.2.4 with `startIndex`/`count`, reporting a real `totalResults`.
+
+### Choosing a deployment
+
+The same solution is provided three ways, and they are equivalent in behaviour. All three package the same handler code, and `tests/unit/test_handler_copies.py` fails if the copies drift apart.
+
+| | Directory | Notes |
+| --- | --- | --- |
+| CDK (TypeScript) | `cdk_source/` | Deploys directly; no manual artifact upload. cdk-nag runs at synth. |
+| CloudFormation | `CloudFormation/` | Requires zipping the Lambda code to S3 first. |
+| Terraform | `Terraform/` | Requires zipping the Lambda code to S3 first. |
+
 ## Prequisites
 
 1. Create an Amazon Connect instance - You can follow the steps outlined in the [Connect administrator guide](https://docs.aws.amazon.com/connect/latest/adminguide/amazon-connect-instances.html) using *SAML 2.0-based authentication* for identity authentication options and [configure SAML with IAM](https://docs.aws.amazon.com/connect/latest/adminguide/configure-saml.html).
@@ -38,6 +65,51 @@ The solution relies on a separate Lambda function that is configured to invoke A
 
 We have provided with 3 Infrastructure as code options as part of this repository. Use the preferred IaC to deploy the SCIM API solution.
 
+### SCIM surface
+
+| Method   | Path             | Behaviour |
+| -------- | ---------------- | --------- |
+| `GET`    | `/Users`         | List or filter users (`userName`, `externalId`, `id`) |
+| `GET`    | `/Users/{id}`    | Read one user |
+| `POST`   | `/Users`         | Create a user (HTTP 201; 409 if it exists) |
+| `PUT`    | `/Users/{id}`    | Replace a user's entitlements |
+| `PATCH`  | `/Users/{id}`    | Toggle `active`, update entitlements |
+| `DELETE` | `/Users/{id}`    | Delete a user |
+| `GET`    | `/Groups`        | List or filter groups (`displayName`, `members.value`) |
+| `GET`    | `/Groups/{id}`   | Read one group, including members |
+| `POST`   | `/Groups`        | Link an existing security profile to a pushed group |
+| `PATCH`  | `/Groups/{id}`   | Add, remove or replace group members |
+| `PUT`    | `/Groups/{id}`   | Refused (HTTP 405) — send membership changes as `PATCH` |
+| `DELETE` | `/Groups/{id}`   | Refused (HTTP 403) — deleting a security profile is an IAM-authorised action |
+
+### Resource mapping
+
+| SCIM | Amazon Connect |
+| ---- | -------------- |
+| User `id` | User id |
+| User `userName` / `externalId` | `Username` |
+| User `entitlements` | Security profile **names** |
+| User `roles` (Okta only) | Routing profile **name** |
+| Group `id` | Security profile id |
+| Group `displayName` | Security profile name |
+| Group `members` | Users holding that security profile |
+
+Behaviours worth knowing:
+
+* **Deactivation deletes.** Amazon Connect has no disabled-user state, so a SCIM `active: false` deletes the user.
+* **A user must keep at least one security profile.** Amazon Connect requires it. If removing a group member would leave that user with none, the removal is skipped, a warning is logged, and the response shows the user still in the group — rather than reporting a change that was not applied.
+* **Unknown profile names are rejected.** An `entitlements` value naming a security profile the instance does not have returns HTTP 400. Dropping it silently would give the user narrower permissions than the IdP asked for, with nothing in the response to say so.
+* **Security profiles are never created.** Creating one grants permissions, so it stays an IAM-authorised administrative action. A group pushed for a profile that does not exist is rejected with a message naming the profile to create.
+* **Group membership reads are eventually consistent.** Enumerating a group uses `SearchUsers`, the only user API returning `SecurityProfileIds` inline; it is index-backed and can lag a write by a few seconds. Writes always use the strongly consistent `DescribeUser`, and `PATCH /Groups/{id}` folds its confirmed per-user results over the index result so its response reflects the write.
+
+### Pagination and limits
+
+* `count` is clamped to 40 and defaults to 25. The clamp is derived from the response budget rather than chosen for tidiness: API Gateway's integration timeout is 29 seconds and cannot be raised, `GET /Users` costs roughly one Amazon Connect call per user in the page, and those calls are throttled at 2 per second. 40 is what fits with margin. A client asking for more receives 40, so it paginates instead of waiting on a page that would time out.
+* `itemsPerPage` is the number of resources actually returned, per RFC 7644 §3.4.2 — not the `count` that was requested. A short page says so: the tail of a listing, a filter matching one user, and a filter matching none report their real length. A client can therefore use it to tell that a listing has ended.
+* A single `PATCH /Groups/{id}` may change at most 250 memberships, and exceeding that returns HTTP 400. Each change costs a `DescribeUser` plus an `UpdateUserSecurityProfiles` at 2 requests per second, so a full 250-member batch cannot finish inside the 29-second integration timeout — keep membership batches well under that. Lambda timeouts are set generously (900 seconds) in all three deployments so that a request the gateway has already abandoned still completes its writes rather than being killed halfway through a batch; the gateway timeout, not the Lambda timeout, is what the identity provider observes.
+* Amazon Connect's user-management quotas are **per AWS account per Region**, so multiple Connect instances in one account share them. The provisioning function uses adaptive boto3 retries to absorb throttling rather than surfacing it to the IdP as a provisioning failure.
+
+
 ## CDK
 
 ### Build
@@ -49,25 +121,52 @@ Before building this app, you need to clone the repository by running the follow
 
 To build this app, you need to be in the project root folder. Then run the following:
 
-    $ npm install -g aws-cdk
-    <installs AWS CDK>
-
+    $ cd cdk_source
     $ npm install
-    <installs appropriate packages found in the package.json>
+    <installs the exact versions pinned in package.json; the CDK CLI is a dev
+     dependency, so a global install is not needed -- use npx cdk>
+
+Dependencies are pinned to exact versions in `package.json`. There is no committed
+`package-lock.json`, so `npm ci` and `npm audit` are unavailable; use `npm install`,
+and `npm install --package-lock-only && npm audit` if you need an audit.
 
 ### Deploy
 
-    $ cdk bootstrap aws://<INSERT_CONNECT_AWS_ACCOUNT>/<INSERT_REGION>
+    $ npx cdk bootstrap aws://<INSERT_CONNECT_AWS_ACCOUNT>/<INSERT_REGION>
     <builds S3 bucket for CDK to store files to perform deployment>
 
-    $ cdk deploy ConnnectUserManagement --parameters connectinstanceid=<INSERT_AMAZON_CONNECT_INSTANCE_ID>
+    $ npx cdk deploy ConnnectUserManagement --parameters connectinstanceid=<INSERT_AMAZON_CONNECT_INSTANCE_ID>
     <deploys the solution resources into an AWS account where you are authenticated.>
     Example Connect instance id: '12345678-1234-abcd-efgh-aaaaaabbccdd'
 
+The identity provider is chosen with the `idp_type` context value, which selects the
+Lambda handler module. `cdk.json` defaults to `okta`; a value other than `okta` or
+`azure` fails at synth time.
+
+    $ npx cdk deploy ConnnectUserManagement -c idp_type=azure --parameters connectinstanceid=<ID>
+
+Note that CloudFormation parameter names drop the underscores from the CDK construct
+ids, so `connect_instance_id` is supplied as `connectinstanceid`.
+
+| Parameter | Default | Purpose |
+| --- | --- | --- |
+| `connectinstanceid` | *(required)* | Amazon Connect instance UUID |
+| `apikeylength` | `32` | Bearer token length, 32-256 |
+| `defaultroutingprofile` | `Basic Routing Profile` | Routing profile used when the IdP supplies none |
+| `defaultsecurityprofile` | `Agent` | Security profile used when the IdP supplies no `entitlements` |
+
 Note the following **Output** after the deployment completes:
 
-1. *IdP-API-Base-URL* - Base URL for the SCIM 2.0 Test App (Header Auth) credentials to authorize provisioning users from the identity provider and the Connect instance.
-2. *IdP-API-Token-SSM-Parameter* - The AWS Systems Manager parameter ARN that has the API Token to configure in the SCIM application to communicate with the API Gateway.
+1. *IdPAPIBaseURL* - Base URL for the provisioning connection. For `okta` it includes the `userName` filter the SCIM 2.0 Test App uses to verify the connection; for `azure` it is the `/scim/v2` tenant URL.
+2. *IdPAPITokenSSMParameter* - The Systems Manager parameter holding the bearer token. Read it with:
+
+       $ aws ssm get-parameter --with-decryption \
+           --name /connect/scim-integration/api-token \
+           --query Parameter.Value --output text
+
+3. *IdPAPITokenKMSKey* - The customer-managed key encrypting that token.
+
+CloudFormation logical ids are alphanumeric, so CDK strips the hyphens from the construct names — these are the keys that appear in the console Outputs tab. The CloudFormation deployment emits `SCIMProvisioningOktaTenantURL` / `SCIMProvisioningAzureTenantURL` and `IdPAPITokenSSMParameter`; Terraform emits `Okta_Url` / `Azure_Url` and `APITokenSSMParameter`.
 
 ## CloudFormation
 
@@ -75,7 +174,7 @@ Note the following **Output** after the deployment completes:
 * The SCIM solution creates 3 Lambda function, download the below Lambda code
     [Authorizer Lambda code](./CloudFormation/lambdas/lambda_authorizer/lambda_authorizer.py)
 
-    [API key Lambda code](./CloudFormation/lambdas/custom_resource/custom_resource_lambda.py)
+    [API key Lambda code](./CloudFormation/lambdas/custom_resource/) — zip `custom_resource_lambda.py` **and** `api_token.py` together
 
     [OKTA User management Lambda code](./CloudFormation/lambdas/user_management/okta_idp/user_management_lambda.py)
 
@@ -83,7 +182,22 @@ Note the following **Output** after the deployment completes:
 
 **NOTE:**  Either OKTA or Azure User management Lambda code can be downloaded based on the Idp Type.
 
-* Compress the Lambda code to **.Zip** format and upload the Lambda code to an existing s3 Bucket or Create a new bucket and upload the Lambda code. Click [here](https://docs.aws.amazon.com/AmazonS3/latest/userguide/create-bucket-overview.html) to see the steps to create s3 bucket.
+> **Packaging changed.** The user-management function is no longer a single file. Its zip must contain **all four** modules from the chosen IdP directory:
+>
+> ```
+> user_management_lambda.py    # entry point
+> handler_core.py              # SCIM routing
+> connect_directory.py         # Amazon Connect adapter
+> scim.py                      # SCIM protocol helpers
+> ```
+>
+> Zip the *contents* of the directory, not the directory itself, so the modules sit at the archive root. A zip containing only `user_management_lambda.py` fails at import with `No module named 'handler_core'`.
+>
+> ```
+> $ cd CloudFormation/lambdas/user_management/okta_idp && zip -r ../../../../user_management.zip .
+> ```
+
+* Upload each zip to an existing S3 bucket, or create a new one. See [creating a bucket](https://docs.aws.amazon.com/AmazonS3/latest/userguide/create-bucket-overview.html).
 
 ## Deploy the SCIM Solution from Console
 
@@ -100,6 +214,7 @@ Note the following **Output** after the deployment completes:
     * Enter the Length for the API key to be generated for lambda authorizer - The IDP Authorization Key Length.
     * The Idptype for user management , allowed values OKTA , Azure
     * The default routing profile that will be associated with the User provisioning - Default value "Basic routing Profile"
+    * The default security profile assigned when the IdP sends no entitlements - Default value "Agent"
 
 ### Artifact details for Lambda function provisioning
 
@@ -115,8 +230,8 @@ The SCIM solution Provisions 3 Lambda functions, pass the s3 bucket name and the
 
 Note the following **Output** after the deployment completes:
 
-1. *IdP-API-Base-URL* - Base URL for the SCIM 2.0 Test App (Header Auth) credentials to authorize provisioning users from the identity provider and the Connect instance.
-2. *IdP-API-Token-SSM-Parameter* - The AWS Systems Manager parameter store that has the API Token to configure in the SCIM application to communicate with the API Gateway.
+1. *SCIMProvisioningOktaTenantURL* (or *SCIMProvisioningAzureTenantURL*) - Base URL for the provisioning connection to configure in the identity provider.
+2. *IdPAPITokenSSMParameter* - The AWS Systems Manager parameter holding the API token to configure in the SCIM application.
 
 ## Terraform
 
@@ -133,12 +248,27 @@ Note the following **Output** after the deployment completes:
 
 **NOTE:**  Either OKTA or Azure User management Lambda code can be downloaded based on the Idp Type.
 
-* Compress the Lambda code to **.Zip** format and upload the Lambda code to an existing s3 Bucket or Create a new bucket and upload the Lambda code. Click [here](https://docs.aws.amazon.com/AmazonS3/latest/userguide/create-bucket-overview.html) to see the steps to create s3 bucket.
+> **Packaging changed.** The user-management function is no longer a single file. Its zip must contain **all four** modules from the chosen IdP directory:
+>
+> ```
+> user_management_lambda.py    # entry point
+> handler_core.py              # SCIM routing
+> connect_directory.py         # Amazon Connect adapter
+> scim.py                      # SCIM protocol helpers
+> ```
+>
+> Zip the *contents* of the directory, not the directory itself, so the modules sit at the archive root. A zip containing only `user_management_lambda.py` fails at import with `No module named 'handler_core'`.
+>
+> ```
+> $ cd Terraform/lambdas/user_management/okta_idp && zip -r ../../../../user_management.zip .
+> ```
+
+* Upload each zip to an existing S3 bucket, or create a new one. See [creating a bucket](https://docs.aws.amazon.com/AmazonS3/latest/userguide/create-bucket-overview.html).
 
 ## Deploy the SCIM Solution
 
 * Create a directory and copy all the **.tf** files to the folder.
-* Create a file **dev.auto.tfvars** and pass the below values for the variable
+* Create a file **dev.auto.tfvars** and pass the below values. `main.tf` reads these as variables, so no file needs editing by hand.
 
 ### Variables
 
@@ -150,20 +280,32 @@ Note the following **Output** after the deployment completes:
     * stage_name              = (Stage name to be used for creation of API, default value is "dev")
     * swagger_file_path       = (Path of the swagger file that is used to deploy the api gateway)
     * IsAzureIdpType          = (bool value for Azure Idp type, default value is false)
-    * IsOktaIdpType           = (bool value for Azure Idp type, default value is false)
+    * IsOKTAIdpType           = (bool value for Okta Idp type, default value is false)
+    * default_security_profile = (Security profile assigned when the IdP sends no entitlements, default value is "Agent")
+    * api_token_length        = (Length of the generated SCIM API bearer token, 32-256, default 32)
+    * manage_apigw_account_settings = (bool, default true. Creates the account-level API Gateway CloudWatch role that access logging needs. Set false if another stack in this account and Region already owns it -- see below.)
+
+***NOTE on `manage_apigw_account_settings`:*** API Gateway's CloudWatch role is a
+single account-and-Region setting, not a per-API one. This deployment creates it by
+default so its access logging works on a fresh account, matching what the CDK and
+CloudFormation deployments do. If something else already sets it, two owners will
+fight over one value on every apply — set this to `false` and the rest of the
+deployment is unchanged.
 
 ***NOTE:*** An example swagger file is included in the ![repo](./Terraform/modules/swaggerconnect.json). This can be modified based on your organization requirements.
 
+It no longer carries an `x-amazon-apigateway-policy`. It used to declare one granting `execute-api:Invoke` with `Principal: {"AWS": "*"}` on `Resource: "*"`, which allowed exactly what an absent policy already allows on an edge-optimised API while reading as a wildcard grant in any audit. The Lambda authorizer is what gates access, and the CDK and CloudFormation deployments never had a resource policy. If you need one — to restrict by source VPC endpoint or IP range, for instance — add it here rather than reinstating the wildcard.
+
 * Configure Credentials of the AWS Account to which the SCIM solution to be provisioned. Click [here](https://registry.terraform.io/providers/hashicorp/aws/latest/docs) to see the steps.
 
-* Run **terraform init** to ensure the provider used in the **versions.tf** are downloaded successfully.
+* Run **terraform init** to ensure the provider used in the **versions.tf** are downloaded successfully. The AWS provider is pinned to `~> 6.62`; the previous `~> 4.30` pin did not recognise Lambda runtimes past `python3.9`, so the deprecated runtime could not be replaced without moving off it.
 * Run **terraform plan** and verify if the resources to be provisioned are as expected.
 * Run **terraform apply --auto-approve** to deploy the resources required to be provisioned.
 
 Note the following **Output** after the deployment completes:
 
-1. *IdP-API-Base-URL* - Base URL for the SCIM 2.0 Test App (Header Auth) credentials to authorize provisioning users from the identity provider and the Connect instance.
-2. *IdP-API-Token-SSM-Parameter* - The AWS Systems Manager parameter Arn that has the API Token to configure in the SCIM application to communicate with the API Gateway.
+1. *Okta_Url* (or *Azure_Url*) - Base URL for the provisioning connection to configure in the identity provider.
+2. *APITokenSSMParameter* - The AWS Systems Manager parameter ARN holding the API token to configure in the SCIM application.
 
 **Important**: This is for demo purposes and the API token should be provisioned and stored in accordance with credential management standards of the environment.
 
@@ -196,8 +338,8 @@ Once the SCIM Solution has successfully deployed based on any one of the above I
 2. Select **Configure API Integration** and select **Enable API integration**
 3. Enter in the following information for the API integration:
 
-* Base URL: Enter in the API Gateway URL output **OktaAPIBaseURL** from the CloudFormation template (e.g. <<https://<API_GATEWAY_ID>.execute-api>>.<REGION>.amazonaws.com/dev/Users?filter=userName%20eq%20%22test.user)
-* API Token: Enter in the bearer token value found in the AWS Systems Manager parameter ARN listed in **OktaAPITokenSSMParameter**. The bearer token will be a 32 alphanumeric value (e.g. 123abc456def789ghi101jklexamples)
+* Base URL: Enter the API Gateway URL from your deployment's base-URL output — **IdPAPIBaseURL** (CDK), **SCIMProvisioningOktaTenantURL** (CloudFormation) or **Okta_Url** (Terraform) (e.g. <<https://<API_GATEWAY_ID>.execute-api>>.<REGION>.amazonaws.com/dev/Users?filter=userName%20eq%20%22test.user)
+* API Token: Enter the bearer token from the Systems Manager parameter named by your deployment's token output — **IdPAPITokenSSMParameter** (CDK, CloudFormation) or **APITokenSSMParameter** (Terraform). The bearer token will be a 32 alphanumeric value (e.g. 123abc456def789ghi101jklexamples)
 
 4. Once the information is entered, select **Test API Credentials**
 
@@ -264,7 +406,17 @@ Once the SCIM application is created, you can create/add Okta groups to manage u
     * Select **Add Another**
     * Enter in the [Amazon Connect routing profile name](https://docs.aws.amazon.com/connect/latest/adminguide/concepts-routing.html) you want all users in the Okta group to be assigned.
       * Note: If you leave this blank, the **Basic routing profile** routing profile (or whichever security profile value is assigned within the SCIM application) will be assigned to each user in this Group
-      * The SCIM application has the **Basic routing profile** to be a default value assigned to each user in this Group. That default value for the routing profile can be updated by changing the value in the Lambda function’s environment variable **ROUTING_PROFILE**. You must assign a default routing profile to create Connect users. Once users are created, you should manage routing profiles outside of Okta as agents can be moved or assigned to different routing profiles as needed during a shift.
+      * The SCIM application has the **Basic routing profile** to be a default value assigned to each user in this Group. That default value for the routing profile can be updated by changing the `defaultroutingprofile` stack parameter, which sets the Lambda environment variable **DEFAULT_ROUTING_PROFILE**. You must assign a default routing profile to create Connect users. Once users are created, you should manage routing profiles outside of Okta as agents can be moved or assigned to different routing profiles as needed during a shift.
+
+#### Pushing groups
+
+An Okta group maps to an Amazon Connect security profile **of the same name**, and this solution never creates security profiles — creating one grants Connect permissions, so it stays an IAM-authorised administrative action. Create the security profile in the Connect instance first, then push the group.
+
+1. On the **Push Groups** tab, select **Push Groups** and choose the Okta group.
+2. A push for a group whose name matches an existing security profile succeeds and links to it.
+3. A push for a name with no matching security profile is rejected with HTTP 400 and a message naming the profile to create.
+
+Membership changes then flow through `PATCH /Groups/{id}`, attaching or detaching that security profile on the affected users. Removing the last member of a group, or unassigning the group entirely, sends a `remove` that clears all members; users whose only security profile is that group's are retained, because Amazon Connect requires every user to hold at least one.
 
 ### Validate Okta SCIM application
 
@@ -329,17 +481,182 @@ instructions for the CDK toolkit on how to execute this program.
 
 After building your TypeScript code, you will be able to run the CDK toolkits commands as usual:
 
-    $ cdk ls
+    $ npx cdk ls
     <list all stacks in this program>
 
-    $ cdk synth
+    $ npx cdk synth
     <generates and outputs cloudformation template>
 
-    $ cdk deploy
+    $ npx cdk deploy
     <deploys stack to your account>
 
-    $ cdk diff
+    $ npx cdk diff
     <shows diff against deployed stack>
+
+## Upgrading from 1.0.0
+
+Whether this can be done in place depends on which deployment you used, and the
+difference is not cosmetic. The findings below come from running each upgrade in a
+scratch account, not from reading the templates.
+
+**In all three cases the bearer token changes**, so you will re-enter it in the
+identity provider afterwards. That is deliberate: 1.0.0 generated the token with
+`random.sample` over a 36-character alphabet, which is not a CSPRNG, so the old
+value is not worth preserving.
+
+Read the new token with:
+
+    $ aws ssm get-parameter --with-decryption \
+        --name /connect/scim-integration/api-token --query Parameter.Value --output text
+
+### CloudFormation — upgrades in place, in two updates
+
+Every logical id that determines the endpoint URL is unchanged between the two
+releases (`SCIMProvisioningAPIGW`, `SCIMAPIStage`, `SCIMAPIProxyResource`,
+`SCIMAPIMethod`, `SCIMAuthorizer`), so **the Tenant URL you configured in the IdP
+stays valid.** Only one resource is removed: `APIKeyParameterStore`, the token
+parameter, which 2.0.0 has its custom resource own instead.
+
+That removal is the whole problem. CloudFormation deletes resources dropped from a
+template during the cleanup phase that runs *after* everything else, so a single
+update has the custom resource rewrite the parameter as a `SecureString` and then
+CloudFormation delete it about two seconds later. **The stack reports
+`UPDATE_COMPLETE` and the endpoint returns 401 for every request**, with nothing in
+the events to say why.
+
+Do this instead. First, update the stack with your **existing 1.0.0 template**, with
+a retention policy added to that one resource:
+
+    APIKeyParameterStore:
+      Type: AWS::SSM::Parameter
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        ...unchanged...
+
+Then update to the 2.0.0 template. The cleanup delete becomes `DELETE_SKIPPED`, the
+parameter survives, and the custom resource rewrites it as a `SecureString` under the
+new customer-managed key. Verified end to end: `ApiKeyCustomAction UPDATE_COMPLETE`
+followed by `APIKeyParameterStore DELETE_SKIPPED`, ending as a `SecureString`.
+
+The retention policy has to be added while the resource still exists, because the
+policy governing a cleanup delete comes from the template the resource is still in —
+adding it to 2.0.0 has no effect.
+
+If you have **already** done the single-step update and the endpoint is returning 401,
+you do not need to redeploy. Re-run the update with a different `ApiKeyLength` and
+`UsePreviousValue=true` on the other parameters. That value reaches the custom
+resource as a property, so changing it forces its `Update` to run again; it finds the
+parameter absent and mints a new token. Also verified.
+
+### Terraform — upgrades in place with a normal apply
+
+Every resource address that determines the URL is unchanged
+(`aws_api_gateway_rest_api.connect_api`, `aws_api_gateway_stage.stage`,
+`aws_api_gateway_deployment.api_deployment`), and `aws_ssm_parameter.apikey` keeps its
+address while changing to a `SecureString` under a new CMK.
+
+    $ terraform init -upgrade      # the AWS provider moves 4.30 -> 6.62
+    $ terraform plan               # read this before applying
+    $ terraform apply
+
+Two things to look for in the plan. `random_string.instance_alias` is replaced by
+`random_password.api_token`, which is where the new token comes from. And
+`aws_api_gateway_account.this` is new: API Gateway's CloudWatch role is an
+account-and-Region singleton, so if anything else in the account already sets it, put
+`manage_apigw_account_settings = false` in your tfvars before applying.
+
+### CDK — cannot be upgraded in place
+
+The `RestApi` construct id is unchanged, so the API id would survive. But 1.0.0
+declared the stage as `new Stage(this, 'dev')` while 2.0.0 creates it through
+`deployOptions`, which gives it a different logical id
+(`scimapigwDeploymentStagedev3ECF3037`) with the same stage name `dev`. CloudFormation
+creates the new logical resource before deleting the old one, so the update fails
+changeset validation with `AWS::EarlyValidation::ResourceExistenceCheck`, and on the
+resource itself with `<api-id>|dev already exists in stack`.
+
+Deleting the live stage out of band does not help — the check is against
+CloudFormation's own resource inventory, where the old `dev` resource is still
+present until cleanup. Confirmed both ways.
+
+So for CDK: delete the 1.0.0 stack and deploy this release fresh. The API id changes,
+so update the Tenant URL in the identity provider as well as the token. If preserving
+the URL matters more than the simpler path, you can get there in two deploys — first
+one that removes the `Stage` and `Deployment` constructs from your 1.0.0 code (with
+`applyRemovalPolicy(RemovalPolicy.RETAIN)` on the `StringParameter`), then this
+release — at the cost of an endpoint outage between the two.
+
+### Applies to every deployment
+
+-   **The Lambda packaging changed for CloudFormation and Terraform.** The
+    user-management zip must now contain `user_management_lambda.py`,
+    `handler_core.py`, `connect_directory.py` and `scim.py` at the archive root, and
+    the API-key zip needs `custom_resource_lambda.py` **and** `api_token.py`. A zip
+    with only the entry point fails at import with `No module named 'handler_core'`.
+    Upload the new zips before starting the upgrade.
+-   **The old implicit Lambda log groups are left behind.** The managed log groups this
+    release adds use deliberately different names (`.../connect-scim-user-management-provisioning`
+    rather than the function-derived name), specifically so that creating them cannot
+    collide with logs an earlier deployment already wrote. Nothing breaks, but the old
+    groups keep their never-expiring retention until you delete them.
+-   `entitlements` is now returned as `[{"value": "Agent"}]` rather than a list of
+    plain strings; both forms are still accepted on input. `POST /Users` returns 201
+    and a deactivating `PATCH` returns 204.
+
+## Development
+
+The CDK app and the Lambda handlers are tested separately.
+
+    # CDK: build, unit tests, synth (cdk-nag AwsSolutions runs during synth)
+    $ cd cdk_source
+    $ npm install
+    $ npx tsc --noEmit
+    $ npx jest
+    $ npx cdk synth
+
+    # Lambda handlers
+    $ cd ..
+    $ python3.14 -m venv .venv
+    $ .venv/bin/pip install -r requirements-dev.txt
+    $ .venv/bin/python -m pytest tests/unit -v
+    $ .venv/bin/ruff check .
+    $ .venv/bin/ruff format --check .
+
+    # Infrastructure
+    $ .venv/bin/cfn-lint CloudFormation/user_management_cloudformation.yaml
+    $ cd Terraform && terraform init -backend=false && terraform validate && terraform fmt -check -recursive
+
+`cdk synth` fails if a cdk-nag `AwsSolutions` rule is triggered without a written acknowledgement. Acknowledgements live in `cdk_source/bin/cdk_source.ts`, each with the reason it is accepted.
+
+### Keeping the three deployments in step
+
+`cdk_source/lambdas` is the canonical handler source. The CloudFormation and Terraform trees hold byte-identical copies, because each deployment packages its own Lambda artifacts. `tests/unit/test_handler_copies.py` compares every copy against the canonical version and fails on any difference. After changing a handler, copy it across and re-run the suite.
+
+### CI
+
+`.github/workflows/ci.yml` runs everything in the Development section above on every pull request and on pushes to `main`, in three jobs: the Lambda handler tests with `ruff` and `cfn-lint`, the CDK build with `jest` and a `cdk synth` per identity provider, and `terraform validate`/`fmt`. The drift guard above is only an actual guard because something runs it on every change — before this workflow existed it fired only when a contributor happened to run the suite locally.
+
+`requirements-dev.txt` pins every dependency including transitive ones. The pins were produced by resolving the direct dependencies in a clean environment and freezing the result; to upgrade, do the same in a fresh virtualenv, re-run the suite and the linters, and commit the new freeze.
+
+Workflow actions are pinned to full commit SHAs rather than tags, with the version in a trailing comment. A tag is mutable: whoever controls the action repository can repoint it, so a pinned tag is not an immutable release. Bump the comment and the SHA together.
+
+### A note if you run a directory-level security scan
+
+Scanners that walk directories tend to skip `modules/` and `providers/`, because those are the names of the caches `terraform init` creates under `.terraform/`. This repository keeps its real Terraform source in `Terraform/modules/`, so a directory-level scan silently covers seven fewer files than you would expect — including `swaggerconnect.json`, which defines the API and its authorizer. Pass those files explicitly, and check the resolved file list rather than trusting the total.
+
+The Python tests run against an in-memory Amazon Connect fake rather than mocking boto3 calls in order. The fake deliberately models the `SearchUsers` index lag: with an instantly-consistent fake, a handler that reads membership back through `SearchUsers` immediately after a write passes its tests and reports empty membership in production.
+
+## Production hardening
+
+The following are deliberately out of scope for this reference implementation and should be considered before production use:
+
+* **Attach an AWS WAF web ACL** to the API, with an IP allow list covering your identity provider's egress ranges. Okta and Microsoft both publish theirs.
+* **Consider a private or regional endpoint** instead of the edge-optimised endpoint if your IdP can reach one.
+* **Manage the bearer token** under your own credential-management standards, including a rotation schedule. The token is not rotated on stack update, because that would silently invalidate the value already configured in the identity provider; rotate by deleting the parameter, updating the stack, and re-entering the new token in the IdP.
+* **Terraform state contains the token.** `random_password` keeps its result in state, so protect state as a secret store regardless of the encryption applied to the parameter itself.
+* **Alarm on the authorizer's 401 rate and the provisioner's error rate** to detect a stale token in the IdP or Connect API throttling.
+* **Review which security and routing profiles the IdP may reference**, and keep their creation restricted to authorised IAM principals.
 
 ## Authors
 

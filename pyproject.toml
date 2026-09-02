@@ -1,0 +1,36 @@
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+extend-exclude = ["cdk_source/cdk.out", "cdk_source/node_modules", ".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "C4", "RET", "ARG", "PL"]
+ignore = [
+    # HTTP status codes are written as literals on purpose; naming them adds
+    # indirection without adding meaning.
+    "PLR2004",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# The fake Amazon Connect client mirrors boto3's PascalCase keyword arguments and
+# its positional signatures, and the adapter has to be imported after the fixture
+# module has put the Lambda source directory on sys.path.
+"tests/unit/conftest.py" = ["ARG002", "PLR0913", "PLR0917", "PLC0415"]
+# Test doubles mirror the boto3 call signatures they stand in for, including
+# PascalCase keyword names and argument counts, and must accept arguments they
+# do not assert on.
+"tests/unit/*" = ["ARG001", "ARG002", "PLR0913", "PLR0917"]
+# 'context' is part of the Lambda handler signature whether or not it is used.
+# The same handlers are packaged by all three deployments (CDK, CloudFormation and
+# Terraform), so these globs are not anchored to one tree.
+"**/lambdas/**/okta.py" = ["ARG001"]
+"**/lambdas/**/azure.py" = ["ARG001"]
+"**/lambdas/**/user_management_lambda.py" = ["ARG001"]
+"**/lambdas/**/lambda_authorizer.py" = ["ARG001"]
+"**/lambdas/**/custom_resource.py" = ["ARG001"]
+"**/lambdas/**/custom_resource_lambda.py" = ["ARG001"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/unit"]
+pythonpath = ["cdk_source/lambdas/user_management"]
+filterwarnings = ["error::DeprecationWarning"]

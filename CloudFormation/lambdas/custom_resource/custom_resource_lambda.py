@@ -1,84 +1,65 @@
-# pylint: disable=R0914
-# pylint: disable=C0301
-# pylint: disable=W0612
-import os
+"""Custom resource entry point for the CloudFormation deployment.
+
+Backs a raw ``AWS::CloudFormation::CustomResource``. There is no framework in
+front of it, so this handler is responsible for posting the result to the
+pre-signed ``ResponseURL``. If it does not, CloudFormation has nothing to wait on
+and the stack sits in CREATE_IN_PROGRESS until the resource times out an hour
+later.
+
+That is the one thing this file does differently from the CDK entry point, which
+runs behind ``custom_resources.Provider`` and must *not* post the response. The
+token logic is shared through :mod:`api_token`.
+"""
+
 import json
-from json import dumps
-import random
-import string
-import boto3
 import logging
+
+import api_token
 import urllib3
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+LOGGER = logging.getLogger()
+LOGGER.setLevel(logging.INFO)
 
-ssm_client = boto3.client('ssm')
-http = urllib3.PoolManager()
-
-lower = string.ascii_lowercase
-num = string.digits
-all = lower + num
-PARAMETER_NAME = os.getenv("PARAMETER_NAME")
+HTTP = urllib3.PoolManager()
 
 
-def send_response(event, context, response):
-    '''Send a response to CloudFormation to handle the custom resource lifecycle.'''   # noqa: E501
-
-    responseBody = { 
-        'Status': response,
-        'Reason': 'See details in CloudWatch Log Stream: ' + context.log_stream_name,      # noqa: E501
-        'PhysicalResourceId': context.log_stream_name,
-        'StackId': event['StackId'],
-        'RequestId': event['RequestId'],
-        'LogicalResourceId': event['LogicalResourceId'],
+def send_response(event, context, status, data=None, reason=None):
+    """Post the resource outcome to the pre-signed CloudFormation ResponseURL."""
+    body = {
+        "Status": status,
+        "Reason": reason or f"See CloudWatch log stream: {context.log_stream_name}",
+        "PhysicalResourceId": event.get("PhysicalResourceId") or api_token.PARAMETER_NAME,
+        "StackId": event["StackId"],
+        "RequestId": event["RequestId"],
+        "LogicalResourceId": event["LogicalResourceId"],
+        "Data": data or {},
     }
-
-    print('RESPONSE BODY: \n' + dumps(responseBody))
-
-    responseUrl = event['ResponseURL']
-    json_responseBody = json.dumps(responseBody)
-    headers = {
-          'content-type': '',
-          'content-length': str(len(json_responseBody))
-    }
-    try:
-        response = http.request('PUT', responseUrl, headers=headers, body=json_responseBody)   # noqa: E501
-        print("Status code: " + response.reason)
-
-    except Exception as e:
-        print("send(..) failed executing requests.put(..): " + str(e))
-
-    return True
+    encoded = json.dumps(body).encode("utf-8")
+    # The URL is a capability and is deliberately not logged.
+    LOGGER.info("Reporting %s for %s", status, event["LogicalResourceId"])
+    response = HTTP.request(
+        "PUT",
+        event["ResponseURL"],
+        body=encoded,
+        headers={"content-type": "", "content-length": str(len(encoded))},
+    )
+    LOGGER.info("CloudFormation acknowledged the response with HTTP %s", response.status)
 
 
 def lambda_handler(event, context):
-    logger.info(event)
-    key_length = int(event['ResourceProperties']['ApiLength'])
-    if event['RequestType'] == 'Create':
-        try:
-            logger.info(f"Generating api key of length {key_length}")
-            temp = random.sample(all, key_length)
-            temppass = ''.join(temp)
-            ssm_client.put_parameter(Name=PARAMETER_NAME, Type='StringList', Value=f'{temppass}', Overwrite=True)   # noqa: E501
-            response = 'SUCCESS'
-        except Exception as e:
-            logger.info(f"Uploading API Key to Parameter store failed because of {e}")    # noqa: E501
-            response = 'FAILED'
-        send_response(event, context, response)
-    if event['RequestType'] == 'Update':
-        response = 'SUCCESS'
-        send_response(event, context, response)
-    if event['RequestType'] == 'Delete':
-        try:
-            response = ssm_client.delete_parameters(
-                Names=[
-                    PARAMETER_NAME,
-                ])
-            response = 'SUCCESS'
-            send_response(event, context, response)
-        except Exception as e:
-            logger.info(f"Deletion of parameter store because of {e}")
-            response = 'FAILED'
-            send_response(event, context, response)
+    """Create, retain, or delete the SCIM API token parameter."""
+    LOGGER.info(
+        "Received %s request for %s",
+        event.get("RequestType"),
+        event.get("LogicalResourceId"),
+    )
+    try:
+        data = api_token.apply(event["RequestType"], event.get("ResourceProperties", {}))
+    except Exception as error:  # noqa: BLE001
+        # A failure must still be reported, or the stack waits out the full
+        # resource timeout instead of rolling back.
+        LOGGER.exception("Token provisioning failed")
+        send_response(event, context, "FAILED", reason=str(error))
+        raise
+    send_response(event, context, "SUCCESS", data=data)

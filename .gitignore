@@ -30,4 +30,18 @@ crash.*.log
 # control as they are data points which are potentially sensitive and subject 
 # to change depending on the environment.
 *.tfvars
-*.tfvars.jso
+*.tfvars.json
+
+# python gitignore content
+
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# Local scan-tool state; references an internal project id, not for publication
+.holmes/
+
+# macOS
+.DS_Store
