@@ -73,9 +73,10 @@ Parameters:
     Description: Security profile assigned when the IdP supplies no entitlements.
 
 Conditions:
-  IdpCondition: !Or
-    - !Equals [!Ref IdpType, "OKTA"]
-    - !Equals [!Ref IdpType, "AZURE"]
+  # IdpCondition used to guard the authorizer function with
+  # "IdpType is OKTA or AZURE". IdpType allows nothing else, so the condition was
+  # always true, and gating a resource on it made every unconditional GetAtt to
+  # that resource look unsafe to cfn-lint (W1001) for no reason.
   OktaCondition: !Equals [!Ref IdpType, "OKTA"]
   AzureCondition: !Equals [!Ref IdpType, "AZURE"]
 
@@ -104,11 +105,8 @@ Resources:
       Code:
         S3Bucket: !Ref CodeBucket
         S3Key: !Ref UserManagementCodeObject
-    DependsOn:
-      - SCIMProvisioningLambdaExecutionRole
 
   SCIMAuthorizerLambda:
-    Condition: IdpCondition
     Type: "AWS::Lambda::Function"
     Properties:
       FunctionName: !Sub "${AWS::StackName}-Authorizerlambda"

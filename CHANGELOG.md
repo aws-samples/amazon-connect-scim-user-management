@@ -135,7 +135,15 @@ a live Amazon Connect instance.
 -   The custom resource returns a result to the `Provider` framework instead of
     also `PUT`ing to `ResponseURL`, which raced the framework's own response.
 -   Removed two always-true `CfnCondition`s that compared a synth-time context
-    value, so CloudFormation reported `Fn::Equals` as always returning true.
+    value, so CloudFormation reported `Fn::Equals` as always returning true. The
+    CloudFormation template had a third of the same kind: `IdpCondition` gated the
+    authorizer function on "`IdpType` is OKTA or AZURE", and `IdpType` allows nothing
+    else. Because the function was nominally conditional, every unconditional
+    `GetAtt` to it was reported as possibly-unresolvable (`W1001`). Removed, along
+    with a `DependsOn` that restated the ordering its `Role` `GetAtt` already
+    established (`W3005`). Both were found by running `cfn-lint` the way CI does --
+    on its exit code, which is 4 for warnings -- rather than by counting error lines,
+    which is how they were previously reported as "3 remaining, none introduced".
 -   The CloudFormation token-generator policy granted `ssm:DeleteParameters`
     (plural), which is not the API the handler calls.
 -   README corrections: the routing profile default is set by the
@@ -181,7 +189,7 @@ a live Amazon Connect instance.
 -   Dropped `connect:UpdateUserIdentityInfo` and `connect:DescribeSecurityProfile`
     from the provisioning role in all three deployments; the handler calls neither.
 -   `npm audit`: 0 vulnerabilities. `cfn-lint` findings on the CloudFormation
-    template: 6 → 3, with none introduced.
+    template: 6 → 0.
 
 ### Fixed in review
 
