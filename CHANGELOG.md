@@ -312,23 +312,49 @@ is not the way the open item proposed:
     pre-existing retention assertion was satisfied by the API Gateway access log
     group alone and stayed green while the functions had none.
 
-### Open items
+### Upgrading from 1.0.0
 
--   **In-place upgrade from 1.0.0 is still not supported**, and this release does not
-    fix it. `TokenStorageVersion` was added so that CloudFormation sends the custom
-    resource an `Update` at all, which is necessary but not sufficient. Testing the
-    upgrade end to end in a scratch account showed why: 1.0.0 owned
-    `/connect/scim-integration/api-token` as a template resource
-    (`AWS::SSM::Parameter` in CloudFormation, `StringParameter` in CDK), and that
-    resource is gone in 2.0.0, so CloudFormation deletes it during the cleanup phase
-    that runs *after* the rest of the update. The observed event order was the custom
-    resource rewriting the parameter as a SecureString at 01:28:37 and CloudFormation
-    deleting it at 01:28:39. **The stack reports `UPDATE_COMPLETE` with no token in
-    Parameter Store**, so the endpoint returns 401 for every request with nothing in
-    the stack events to say why. A deletion policy cannot be applied from the new
-    template, because the policy that governs a cleanup delete comes from the
-    template the resource still exists in. See the migration notes for the tested
-    recovery.
+Not an open item any more, but not uniform either: it depends on the deployment, and
+`TokenStorageVersion` alone is necessary rather than sufficient. All three paths were
+run in a scratch account. The README has the operator-facing version.
+
+The shared cause is that 1.0.0 owned `/connect/scim-integration/api-token` as a
+template resource (`AWS::SSM::Parameter`, and `StringParameter` in CDK) while 2.0.0
+has its custom resource own it. CloudFormation deletes resources dropped from a
+template during the cleanup phase that runs *after* the rest of the update, so a
+single-step update has the custom resource rewrite the parameter as a SecureString and
+then CloudFormation delete it -- observed two seconds apart. The stack reports
+`UPDATE_COMPLETE` with no token in Parameter Store, so the endpoint returns 401 with
+nothing in the events to explain it.
+
+-   **CloudFormation upgrades in place, in two updates.** Add
+    `DeletionPolicy: Retain` and `UpdateReplacePolicy: Retain` to
+    `APIKeyParameterStore` in the 1.0.0 template and update, then update to 2.0.0. The
+    cleanup delete becomes `DELETE_SKIPPED` and the parameter survives to be rewritten
+    as a SecureString. It has to be done in that order, because the policy governing a
+    cleanup delete comes from the template the resource still exists in -- putting it
+    in 2.0.0 does nothing. Every logical id that determines the endpoint URL is
+    unchanged between the releases, so the IdP's Tenant URL stays valid.
+-   **Terraform upgrades in place** with `terraform init -upgrade` and `apply`. Every
+    URL-relevant resource address is unchanged and `aws_ssm_parameter.apikey` keeps its
+    address while becoming a SecureString under the new CMK.
+-   **CDK cannot be upgraded in place.** 1.0.0 declared the stage as
+    `new Stage(this, 'dev')`; 2.0.0 creates it through `deployOptions`, so the logical
+    id becomes `scimapigwDeploymentStagedev3ECF3037` while the stage name stays `dev`.
+    CloudFormation creates before it cleans up, so the update fails changeset
+    validation with `AWS::EarlyValidation::ResourceExistenceCheck` and the resource
+    with `<api-id>|dev already exists in stack`. Deleting the live stage out of band
+    does not help: the check is against CloudFormation's own inventory, where the old
+    `dev` resource is present until cleanup. Deploy a fresh stack, which changes the
+    API id and so the Tenant URL.
+
+A stack already broken by a single-step update recovers without a redeploy: re-run it
+with a different `ApiKeyLength`, which forces the custom resource's `Update` to run
+again and mint a token. Also tested.
+
+The token value changes on every path. That is intended -- 1.0.0 generated it with
+`random.sample` over a 36-character alphabet, which is not a CSPRNG -- so the identity
+provider needs the new value regardless of which route is taken.
 
 ### Verified in a scratch account
 
@@ -349,35 +375,13 @@ rather than reasoned about.
 -   **A fresh deployment** writes a new bearer token. Read it with
     `aws ssm get-parameter --with-decryption --name /connect/scim-integration/api-token`
     and enter it in the identity provider's provisioning settings.
--   **An in-place upgrade from 1.0.0 is not supported.** The previous release owned
-    the token parameter as a template resource; this one has its custom resource
-    create it as a SecureString. On `update-stack` the custom resource rewrites the
-    parameter and CloudFormation's cleanup phase then deletes it, because the
-    resource no longer exists in the template. **The stack reports success and the
-    SCIM endpoint returns 401 for every request**, because there is no token for the
-    authorizer to compare against.
-
-    Do this instead: delete the previous stack, or delete the parameter, and deploy
-    this release fresh.
-
-    If a stack has already been upgraded in place, recover it without a redeploy by
-    re-running the deployment with a different token length. That value reaches the
-    custom resource as a property, so changing it forces the `Update` to run again;
-    it finds the parameter absent and mints a new token. Tested end to end:
-
-        # CDK. 'apikeylength', not 'api_key_length': CloudFormation logical ids are
-        # alphanumeric, so CDK strips the underscores at synth time.
-        $ npx cdk deploy -c idp_type=<okta|azure> --parameters apikeylength=33
-
-    For CloudFormation, re-run `update-stack` with a different `ApiKeyLength` and
-    `UsePreviousValue=true` on the remaining parameters. The two deployments do not
-    share parameter names: the CloudFormation template declares `ApiKeyLength` and
-    `AmazonConnectInstanceId`, the CDK-synthesised one `apikeylength` and
-    `connectinstanceid`.
-
-    Then read the new token and enter it in the identity provider. The token value
-    changes in every one of these paths, so the identity provider needs updating
-    regardless of which you take.
+-   **Upgrading from 1.0.0 differs per deployment**, and the CDK one cannot be done in
+    place at all. See "Upgrading from 1.0.0" above for the tested detail, and the
+    README for the operator-facing steps. In short: CloudFormation upgrades in place
+    if you first add `DeletionPolicy: Retain` to `APIKeyParameterStore` in the 1.0.0
+    template; Terraform upgrades with a normal `init -upgrade` and `apply`; CDK needs a
+    fresh stack, because the stage's logical id changes while its name stays `dev` and
+    CloudFormation refuses the collision. The token value changes on every path.
 -   The `entitlements` attribute is returned as a multi-valued complex attribute
     (`[{"value": "Agent"}]`) rather than a list of plain strings. Both forms are
     accepted on input.

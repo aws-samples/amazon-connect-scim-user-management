@@ -493,21 +493,116 @@ After building your TypeScript code, you will be able to run the CDK toolkits co
     $ npx cdk diff
     <shows diff against deployed stack>
 
-## Upgrading from an earlier deployment
+## Upgrading from 1.0.0
 
-**Do not update an existing 1.0.0 stack in place.** That release owned the token parameter as a template resource; this one has its custom resource create it as an encrypted `SecureString`. On `update-stack` the custom resource rewrites the parameter and CloudFormation's cleanup phase then deletes it, because the resource is no longer in the template. The stack reports success, and the SCIM endpoint returns 401 for every request because there is no token for the authorizer to compare against. This was tested end to end; the cleanup delete lands about two seconds after the custom resource finishes.
+Whether this can be done in place depends on which deployment you used, and the
+difference is not cosmetic. The findings below come from running each upgrade in a
+scratch account, not from reading the templates.
 
-Delete the previous stack, or delete the parameter, and deploy this release fresh.
+**In all three cases the bearer token changes**, so you will re-enter it in the
+identity provider afterwards. That is deliberate: 1.0.0 generated the token with
+`random.sample` over a 36-character alphabet, which is not a CSPRNG, so the old
+value is not worth preserving.
 
-If a stack has already been upgraded in place, re-run the deployment with a different token length. That value reaches the custom resource as a property, so changing it forces its `Update` to run again; it finds the parameter absent and mints a new token.
+Read the new token with:
 
-    # CDK. The parameter is 'apikeylength', not 'api_key_length' -- CloudFormation
-    # logical ids are alphanumeric, so CDK strips the underscores at synth time.
-    $ npx cdk deploy -c idp_type=<okta|azure> --parameters apikeylength=33
+    $ aws ssm get-parameter --with-decryption \
+        --name /connect/scim-integration/api-token --query Parameter.Value --output text
 
-For CloudFormation, re-run your `update-stack` with a different `ApiKeyLength` and `UsePreviousValue=true` on the rest. Note the parameter names differ between the two deployments: the CloudFormation template declares `ApiKeyLength` and `AmazonConnectInstanceId`, while the CDK-synthesised template has `apikeylength` and `connectinstanceid`.
+### CloudFormation — upgrades in place, in two updates
 
-The token value changes on every one of these paths, so read it back and re-enter it in the identity provider's provisioning settings afterwards. The Lambda packaging also changed — see the migration notes in [CHANGELOG.md](./CHANGELOG.md), since a zip containing only the entry point now fails at import.
+Every logical id that determines the endpoint URL is unchanged between the two
+releases (`SCIMProvisioningAPIGW`, `SCIMAPIStage`, `SCIMAPIProxyResource`,
+`SCIMAPIMethod`, `SCIMAuthorizer`), so **the Tenant URL you configured in the IdP
+stays valid.** Only one resource is removed: `APIKeyParameterStore`, the token
+parameter, which 2.0.0 has its custom resource own instead.
+
+That removal is the whole problem. CloudFormation deletes resources dropped from a
+template during the cleanup phase that runs *after* everything else, so a single
+update has the custom resource rewrite the parameter as a `SecureString` and then
+CloudFormation delete it about two seconds later. **The stack reports
+`UPDATE_COMPLETE` and the endpoint returns 401 for every request**, with nothing in
+the events to say why.
+
+Do this instead. First, update the stack with your **existing 1.0.0 template**, with
+a retention policy added to that one resource:
+
+    APIKeyParameterStore:
+      Type: AWS::SSM::Parameter
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        ...unchanged...
+
+Then update to the 2.0.0 template. The cleanup delete becomes `DELETE_SKIPPED`, the
+parameter survives, and the custom resource rewrites it as a `SecureString` under the
+new customer-managed key. Verified end to end: `ApiKeyCustomAction UPDATE_COMPLETE`
+followed by `APIKeyParameterStore DELETE_SKIPPED`, ending as a `SecureString`.
+
+The retention policy has to be added while the resource still exists, because the
+policy governing a cleanup delete comes from the template the resource is still in —
+adding it to 2.0.0 has no effect.
+
+If you have **already** done the single-step update and the endpoint is returning 401,
+you do not need to redeploy. Re-run the update with a different `ApiKeyLength` and
+`UsePreviousValue=true` on the other parameters. That value reaches the custom
+resource as a property, so changing it forces its `Update` to run again; it finds the
+parameter absent and mints a new token. Also verified.
+
+### Terraform — upgrades in place with a normal apply
+
+Every resource address that determines the URL is unchanged
+(`aws_api_gateway_rest_api.connect_api`, `aws_api_gateway_stage.stage`,
+`aws_api_gateway_deployment.api_deployment`), and `aws_ssm_parameter.apikey` keeps its
+address while changing to a `SecureString` under a new CMK.
+
+    $ terraform init -upgrade      # the AWS provider moves 4.30 -> 6.62
+    $ terraform plan               # read this before applying
+    $ terraform apply
+
+Two things to look for in the plan. `random_string.instance_alias` is replaced by
+`random_password.api_token`, which is where the new token comes from. And
+`aws_api_gateway_account.this` is new: API Gateway's CloudWatch role is an
+account-and-Region singleton, so if anything else in the account already sets it, put
+`manage_apigw_account_settings = false` in your tfvars before applying.
+
+### CDK — cannot be upgraded in place
+
+The `RestApi` construct id is unchanged, so the API id would survive. But 1.0.0
+declared the stage as `new Stage(this, 'dev')` while 2.0.0 creates it through
+`deployOptions`, which gives it a different logical id
+(`scimapigwDeploymentStagedev3ECF3037`) with the same stage name `dev`. CloudFormation
+creates the new logical resource before deleting the old one, so the update fails
+changeset validation with `AWS::EarlyValidation::ResourceExistenceCheck`, and on the
+resource itself with `<api-id>|dev already exists in stack`.
+
+Deleting the live stage out of band does not help — the check is against
+CloudFormation's own resource inventory, where the old `dev` resource is still
+present until cleanup. Confirmed both ways.
+
+So for CDK: delete the 1.0.0 stack and deploy this release fresh. The API id changes,
+so update the Tenant URL in the identity provider as well as the token. If preserving
+the URL matters more than the simpler path, you can get there in two deploys — first
+one that removes the `Stage` and `Deployment` constructs from your 1.0.0 code (with
+`applyRemovalPolicy(RemovalPolicy.RETAIN)` on the `StringParameter`), then this
+release — at the cost of an endpoint outage between the two.
+
+### Applies to every deployment
+
+-   **The Lambda packaging changed for CloudFormation and Terraform.** The
+    user-management zip must now contain `user_management_lambda.py`,
+    `handler_core.py`, `connect_directory.py` and `scim.py` at the archive root, and
+    the API-key zip needs `custom_resource_lambda.py` **and** `api_token.py`. A zip
+    with only the entry point fails at import with `No module named 'handler_core'`.
+    Upload the new zips before starting the upgrade.
+-   **The old implicit Lambda log groups are left behind.** The managed log groups this
+    release adds use deliberately different names (`.../connect-scim-user-management-provisioning`
+    rather than the function-derived name), specifically so that creating them cannot
+    collide with logs an earlier deployment already wrote. Nothing breaks, but the old
+    groups keep their never-expiring retention until you delete them.
+-   `entitlements` is now returned as `[{"value": "Agent"}]` rather than a list of
+    plain strings; both forms are still accepted on input. `POST /Users` returns 201
+    and a deactivating `PATCH` returns 204.
 
 ## Development
 
