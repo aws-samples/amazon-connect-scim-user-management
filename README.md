@@ -639,6 +639,12 @@ The CDK app and the Lambda handlers are tested separately.
 
 `requirements-dev.txt` pins every dependency including transitive ones. The pins were produced by resolving the direct dependencies in a clean environment and freezing the result; to upgrade, do the same in a fresh virtualenv, re-run the suite and the linters, and commit the new freeze.
 
+Workflow actions are pinned to full commit SHAs rather than tags, with the version in a trailing comment. A tag is mutable: whoever controls the action repository can repoint it, so a pinned tag is not an immutable release. Bump the comment and the SHA together.
+
+### A note if you run a directory-level security scan
+
+Scanners that walk directories tend to skip `modules/` and `providers/`, because those are the names of the caches `terraform init` creates under `.terraform/`. This repository keeps its real Terraform source in `Terraform/modules/`, so a directory-level scan silently covers seven fewer files than you would expect — including `swaggerconnect.json`, which defines the API and its authorizer. Pass those files explicitly, and check the resolved file list rather than trusting the total.
+
 The Python tests run against an in-memory Amazon Connect fake rather than mocking boto3 calls in order. The fake deliberately models the `SearchUsers` index lag: with an instantly-consistent fake, a handler that reads membership back through `SearchUsers` immediately after a write passes its tests and reports empty membership in production.
 
 ## Production hardening
