@@ -78,18 +78,34 @@ class TestPagination:
         assert scim.start_index({"queryStringParameters": {"startIndex": "-5"}}) == 1
 
     def test_list_response_shape(self):
-        body = scim.list_response([{"id": "1"}], 42, 1, 100)
+        body = scim.list_response([{"id": "1"}], 42, 1)
         assert body["schemas"] == [scim.LIST_RESPONSE_SCHEMA]
         assert body["totalResults"] == 42
         assert body["startIndex"] == 1
-        assert body["itemsPerPage"] == 100
+        assert body["itemsPerPage"] == 1
         assert body["Resources"] == [{"id": "1"}]
 
     def test_empty_list_response_reports_zero_total(self):
         # The old handler reported totalResults 1 with an empty Resources list.
-        body = scim.list_response([], 0, 1, 100)
+        body = scim.list_response([], 0, 1)
         assert body["totalResults"] == 0
         assert body["Resources"] == []
+        assert body["itemsPerPage"] == 0
+
+    def test_items_per_page_counts_the_page_not_the_request(self):
+        """RFC 7644 section 3.4.2: itemsPerPage is the number of resources returned.
+
+        It used to echo the requested ``count``, so every short page over-reported:
+        a five-resource tail of a 25-per-page listing claimed 25. A client using
+        itemsPerPage to decide whether another page exists would keep asking.
+        """
+        tail = scim.list_response([{"id": str(n)} for n in range(5)], 30, 26)
+        assert tail["itemsPerPage"] == 5
+        assert tail["itemsPerPage"] != scim.DEFAULT_PAGE_SIZE
+        # The invariant that makes it impossible to get wrong.
+        for count in (0, 1, 7, scim.MAX_PAGE_SIZE):
+            body = scim.list_response([{"id": str(n)} for n in range(count)], 999, 1)
+            assert body["itemsPerPage"] == len(body["Resources"]) == count
 
 
 class TestParsePatchOperations:

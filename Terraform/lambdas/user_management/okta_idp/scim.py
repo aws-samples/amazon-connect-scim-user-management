@@ -167,13 +167,20 @@ def start_index(event):
     return max(requested, 1)
 
 
-def list_response(resources, total_results, start, items_per_page):
-    """Build a ``ListResponse`` per RFC 7644 section 3.4.2."""
+def list_response(resources, total_results, start):
+    """Build a ``ListResponse`` per RFC 7644 section 3.4.2.
+
+    ``itemsPerPage`` is derived from the page rather than passed in. RFC 7644
+    section 3.4.2 defines it as the number of resources returned, so echoing the
+    requested ``count`` over-reports every short page -- the last page of a set, a
+    filter matching one user, or a filter matching none. A client that trusts it to
+    decide whether more pages exist would keep paging past the end.
+    """
     return {
         "schemas": [LIST_RESPONSE_SCHEMA],
         "totalResults": total_results,
         "startIndex": start,
-        "itemsPerPage": items_per_page,
+        "itemsPerPage": len(resources),
         "Resources": resources,
     }
 

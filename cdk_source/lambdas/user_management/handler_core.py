@@ -152,10 +152,7 @@ def _list_users(event):
         summary = directory.find_user(lookup)
         resources = [_user_resource(summary)] if summary else []
         return scim.json_response(
-            200,
-            scim.list_response(
-                resources, len(resources), scim.start_index(event), scim.page_size(event)
-            ),
+            200, scim.list_response(resources, len(resources), scim.start_index(event))
         )
 
     size = scim.page_size(event)
@@ -165,7 +162,7 @@ def _list_users(event):
     start = scim.start_index(event)
     window = all_summaries[start - 1 : start - 1 + size]
     resources = [_user_resource(summary) for summary in window]
-    return scim.json_response(200, scim.list_response(resources, len(all_summaries), start, size))
+    return scim.json_response(200, scim.list_response(resources, len(all_summaries), start))
 
 
 def _user_resource(summary):
@@ -350,7 +347,7 @@ def _list_groups(event):
         # through GET /Groups/{id} or a members.value filter, so listing groups
         # costs one call rather than one SearchUsers per group.
         resources = [directory.to_scim_group(profile)] if profile else []
-        return scim.json_response(200, _group_list_body(event, resources, size))
+        return scim.json_response(200, _group_list_body(event, resources))
 
     if member_value:
         summary = directory.find_user(member_value)
@@ -362,7 +359,7 @@ def _list_groups(event):
                 for profile in directory.iter_security_profiles()
                 if profile["Id"] in held
             ]
-        return scim.json_response(200, _group_list_body(event, resources, size))
+        return scim.json_response(200, _group_list_body(event, resources))
 
     if terms:
         raise scim.ScimError(
@@ -376,12 +373,12 @@ def _list_groups(event):
     start = scim.start_index(event)
     window = all_profiles[start - 1 : start - 1 + size]
     resources = [directory.to_scim_group(profile) for profile in window]
-    return scim.json_response(200, scim.list_response(resources, len(all_profiles), start, size))
+    return scim.json_response(200, scim.list_response(resources, len(all_profiles), start))
 
 
-def _group_list_body(event, resources, size):
+def _group_list_body(event, resources):
     """Wrap group resources in a ListResponse."""
-    return scim.list_response(resources, len(resources), scim.start_index(event), size)
+    return scim.list_response(resources, len(resources), scim.start_index(event))
 
 
 def _link_group(event):

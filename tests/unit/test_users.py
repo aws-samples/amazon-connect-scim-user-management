@@ -103,6 +103,38 @@ class TestUserPagination:
         assert not set(first_ids) & set(second_ids)
         assert set(first_ids) | set(second_ids) <= set(ids)
 
+    def test_the_final_page_reports_its_real_length(self, connect):
+        """A short tail must not claim the requested count.
+
+        itemsPerPage used to echo ``count``, so this page reported 10 while
+        returning 2. A client walking pages by comparing itemsPerPage against the
+        count it asked for would never see the listing end.
+        """
+        for index in range(12):
+            connect.add_user(f"user{index:02d}@example.com", [AGENT_PROFILE])
+        status, body = call("GET", "Users", query={"startIndex": "11", "count": "10"})
+        assert status == 200
+        assert body["totalResults"] == 12
+        assert body["startIndex"] == 11
+        assert len(body["Resources"]) == 2
+        assert body["itemsPerPage"] == 2
+
+    def test_a_filter_that_matches_nobody_reports_no_items(self, connect):
+        connect.add_user("present@example.com", [AGENT_PROFILE])
+        status, body = call("GET", "Users", query={"filter": 'userName eq "absent@example.com"'})
+        assert status == 200
+        assert body["Resources"] == []
+        assert body["totalResults"] == 0
+        assert body["itemsPerPage"] == 0
+
+    def test_a_filter_that_matches_one_user_reports_one_item(self, connect):
+        connect.add_user("present@example.com", [AGENT_PROFILE])
+        status, body = call(
+            "GET", "Users", query={"filter": 'userName eq "present@example.com"', "count": "25"}
+        )
+        assert status == 200
+        assert body["itemsPerPage"] == 1
+
 
 class TestConnectCallBudget:
     """A page must fit inside API Gateway's 29s integration window.

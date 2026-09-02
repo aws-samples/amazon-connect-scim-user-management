@@ -73,6 +73,31 @@ class TestListGroups:
         assert status == 400
         assert body["scimType"] == "invalidFilter"
 
+    def test_items_per_page_counts_the_groups_returned(self, connect):
+        """The group paths had the same defect the user paths did.
+
+        itemsPerPage echoed the requested count, so a filter matching one profile
+        out of three reported a page of 25.
+        """
+        _, listing = call("GET", "Groups", query={"count": "25"})
+        assert listing["itemsPerPage"] == 3
+
+        _, filtered = call(
+            "GET", "Groups", query={"filter": 'displayName eq "Supervisor"', "count": "25"}
+        )
+        assert filtered["itemsPerPage"] == 1
+
+        _, missing = call("GET", "Groups", query={"filter": 'displayName eq "Nope"', "count": "25"})
+        assert missing["itemsPerPage"] == 0
+
+    def test_group_final_page_reports_its_real_length(self, connect):
+        # Three profiles exist; asking for two from index 3 leaves one.
+        status, body = call("GET", "Groups", query={"startIndex": "3", "count": "2"})
+        assert status == 200
+        assert body["totalResults"] == 3
+        assert len(body["Resources"]) == 1
+        assert body["itemsPerPage"] == 1
+
 
 class TestGetGroup:
     def test_returns_members(self, connect):

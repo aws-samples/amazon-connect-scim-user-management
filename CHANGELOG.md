@@ -39,7 +39,7 @@ a live Amazon Connect instance.
 -   `DELETE /Users/{id}`, and SCIM-conformant error responses
     (`urn:ietf:params:scim:api:messages:2.0:Error` with `scimType`) in place of
     unhandled exceptions surfacing as HTTP 502.
--   Test suite: 250 Python tests and 40 CDK assertion tests, run by CI on every pull
+-   Test suite: 256 Python tests and 40 CDK assertion tests, run by CI on every pull
     request. The upstream tree carried no test file at all. Two deliberate choices in
     there: the Amazon Connect fake models the `SearchUsers` index lag, because an
     instantly-consistent fake hides a real class of bug; and
@@ -194,6 +194,16 @@ a live Amazon Connect instance.
 ### Fixed in review
 
 A pre-merge review of this branch found defects in the new code, fixed here:
+
+-   **`itemsPerPage` reported the requested `count` rather than the page returned**,
+    which RFC 7644 section 3.4.2 defines it as. Every short page over-reported: the
+    tail of a listing claimed a full page, a `userName` filter matching one user
+    claimed 25, and a filter matching none also claimed 25 while returning an empty
+    `Resources` array. A client using it to decide whether another page exists would
+    keep paging past the end of the set. It is now derived inside
+    `scim.list_response` from the page itself, so a caller cannot pass a value that
+    disagrees with what it is sending; the parameter is gone from the signature. Both
+    the user and group paths were affected.
 
 -   **A malformed targeted removal wiped the whole group.** `scim.targets_members`
     accepted the pathless form `{"op":"remove","value":{"members":[...]}}` while
