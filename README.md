@@ -294,6 +294,8 @@ deployment is unchanged.
 
 ***NOTE:*** An example swagger file is included in the ![repo](./Terraform/modules/swaggerconnect.json). This can be modified based on your organization requirements.
 
+It no longer carries an `x-amazon-apigateway-policy`. It used to declare one granting `execute-api:Invoke` with `Principal: {"AWS": "*"}` on `Resource: "*"`, which allowed exactly what an absent policy already allows on an edge-optimised API while reading as a wildcard grant in any audit. The Lambda authorizer is what gates access, and the CDK and CloudFormation deployments never had a resource policy. If you need one — to restrict by source VPC endpoint or IP range, for instance — add it here rather than reinstating the wildcard.
+
 * Configure Credentials of the AWS Account to which the SCIM solution to be provisioned. Click [here](https://registry.terraform.io/providers/hashicorp/aws/latest/docs) to see the steps.
 
 * Run **terraform init** to ensure the provider used in the **versions.tf** are downloaded successfully. The AWS provider is pinned to `~> 6.62`; the previous `~> 4.30` pin did not recognise Lambda runtimes past `python3.9`, so the deprecated runtime could not be replaced without moving off it.

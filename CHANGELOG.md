@@ -188,8 +188,20 @@ a live Amazon Connect instance.
     `methodArn`, so a token cannot be replayed against another API in the account.
 -   Dropped `connect:UpdateUserIdentityInfo` and `connect:DescribeSecurityProfile`
     from the provisioning role in all three deployments; the handler calls neither.
+-   **Removed a wildcard API Gateway resource policy from the Terraform swagger.**
+    `Terraform/modules/swaggerconnect.json` declared `execute-api:Invoke` for
+    `Principal: {"AWS": "*"}` on `Resource: "*"`. It was not an authentication bypass
+    -- the Lambda authorizer still ran -- but on an edge-optimised API it permitted
+    exactly what an absent policy permits, so it was a wildcard grant that bought
+    nothing, and the CDK and CloudFormation deployments never had one. Verified by
+    importing the swagger into API Gateway both with and without the policy: same
+    `/{Users+}` path, same `aws-lambda-authorizer` TOKEN authorizer, same `CUSTOM`
+    method authorization type, with the policy the only difference. No wildcard
+    principal now remains in any of the three deployments.
 -   `npm audit`: 0 vulnerabilities. `cfn-lint` findings on the CloudFormation
-    template: 6 → 0.
+    template: 6 → 0. The seven Dependabot alerts open against the default branch are
+    all `aws-cdk-lib` advisories with patched versions between 2.80.0 and 2.260.0;
+    the 2.267.0 pin in this release is above every one of them.
 
 ### Fixed in review
 
