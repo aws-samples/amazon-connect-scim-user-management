@@ -191,8 +191,10 @@ describe('API token', () => {
     // CDK warn that the value would be overwritten.
     const resources = synth().findResources('Custom::ScimApiToken');
     const [resource] = Object.values(resources);
-    expect(resource.Properties).toHaveProperty('ApiLength');
-    expect(Object.keys(resource.Properties).filter((k) => k === 'ServiceToken')).toHaveLength(1);
+    // Assert the whole property set. Filtering for the key and asserting length 1
+    // was always true: CDK renders serviceToken into Properties regardless, and
+    // object keys are unique, so re-adding the regression would still pass.
+    expect(Object.keys(resource.Properties).sort()).toEqual(['ApiLength', 'ServiceToken']);
   });
 
   it('constrains the requested token length', () => {
@@ -225,6 +227,10 @@ describe('API Gateway', () => {
     });
   });
 
+  it('enables X-Ray tracing, matching the other two deployments', () => {
+    synth().hasResourceProperties('AWS::ApiGateway::Stage', { TracingEnabled: true });
+  });
+
   it('enables access logging', () => {
     synth().hasResourceProperties('AWS::ApiGateway::Stage', {
       AccessLogSetting: Match.objectLike({ DestinationArn: Match.anyValue() }),
@@ -252,8 +258,12 @@ describe('API Gateway', () => {
   });
 
   it('validates the Connect instance id format', () => {
+    // Asserted exactly: toBeDefined() also passes for AllowedPattern '.*', and the
+    // value ends up in the provisioning role's resource ARNs.
     const parameters = synth().toJSON().Parameters;
-    expect(parameters.connectinstanceid.AllowedPattern).toBeDefined();
+    expect(parameters.connectinstanceid.AllowedPattern).toBe(
+      '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
+    );
   });
 });
 

@@ -95,7 +95,12 @@ def lambda_handler(event, context):
     if presented.lower().startswith("bearer "):
         presented = presented[len("bearer ") :].strip()
 
-    if not presented or not secrets.compare_digest(presented, expected_token()):
+    # compare_digest rejects str containing non-ASCII, so both sides are encoded
+    # first; otherwise a malformed header raised TypeError and surfaced as a 500
+    # instead of the 401 this function exists to return.
+    if not presented or not secrets.compare_digest(
+        presented.encode("utf-8"), expected_token().encode("utf-8")
+    ):
         LOGGER.warning("Rejected a request to %s: token did not match", method_arn)
         # API Gateway maps this exact message to HTTP 401.
         raise Exception("Unauthorized")

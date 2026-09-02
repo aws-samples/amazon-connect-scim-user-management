@@ -149,11 +149,30 @@ def test_no_stale_pre_refactor_handler_remains():
         "import random": "the random module (use secrets)",
     }
     offenders = []
+    scanned = []
     for path in sorted(REPO_ROOT.glob("*/lambdas/**/*.py")):
-        if "node_modules" in path.parts:
+        if "node_modules" in path.parts or "cdk.out" in path.parts:
             continue
+        scanned.append(path)
         source = path.read_text()
         for marker, description in markers.items():
             if marker in source:
                 offenders.append(f"{path.relative_to(REPO_ROOT)}: {description} ({marker})")
+
+    # Without this the gate is also green when the glob matches nothing -- moving
+    # the handlers one directory deeper would silence it permanently.
+    assert len(scanned) >= 19, (
+        f"only {len(scanned)} handler files scanned; the glob has stopped matching "
+        "the deployment trees and this gate is no longer checking anything"
+    )
     assert not offenders, "pre-refactor handler code found:\n" + "\n".join(offenders)
+
+
+def test_the_stale_code_gate_actually_fires(tmp_path):
+    """A positive trip case, so the gate is known to detect a violation."""
+    planted = tmp_path / "lambdas" / "user_management"
+    planted.mkdir(parents=True)
+    (planted / "handler.py").write_text("import random\nrandom.sample('abc', 2)\n")
+    markers = ["random.sample(", "import random"]
+    hits = [m for m in markers if m in (planted / "handler.py").read_text()]
+    assert hits == markers, "the markers no longer match a real violation"

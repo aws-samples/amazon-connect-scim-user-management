@@ -16,7 +16,6 @@ Endpoints
 ``GET    /Groups``          List/filter groups (``displayName``, ``members.value``)
 ``GET    /Groups/{id}``     Read one group, with members
 ``POST   /Groups``          Link an existing security profile as a group
-``PUT    /Groups/{id}``     Replace group membership
 ``PATCH  /Groups/{id}``     Add/remove/replace group members
 ==========================  ==================================================
 
@@ -242,7 +241,10 @@ def _update_user(event, method, user_id):
             )
             directory.delete_user(resolved_id)
             return scim.json_response(204)
-        entitlements = _entitlements_from_operations(operations)
+        current_names = directory.security_profile_names_for_ids(
+            directory.describe_user(resolved_id).get("SecurityProfileIds", [])
+        )
+        entitlements = _entitlements_from_operations(operations, current_names)
     else:
         entitlements = _entitlement_names(payload, required=False)
         if payload.get("active") is False:
@@ -255,14 +257,15 @@ def _update_user(event, method, user_id):
 
     if entitlements is not None:
         profile_ids = directory.security_profile_ids_for_names(entitlements)
-        if profile_ids:
-            directory.set_user_security_profiles(resolved_id, profile_ids)
-        else:
-            LOGGER.warning(
-                "Ignoring an empty entitlements set for Connect user %s: Amazon "
-                "Connect requires at least one security profile per user.",
-                resolved_id,
+        if not profile_ids:
+            raise scim.ScimError(
+                400,
+                "The requested change would leave the user with no security "
+                "profile, which Amazon Connect does not allow. Leave at least one "
+                "entitlement in place, or deactivate the user instead.",
+                scim_type="invalidValue",
             )
+        directory.set_user_security_profiles(resolved_id, profile_ids)
 
     detail = directory.describe_user(resolved_id)
     return scim.json_response(
@@ -300,8 +303,17 @@ def _handle_groups(event, method, group_id):
         return _list_groups(event)
     if method == "POST":
         return _link_group(event)
-    if method in ("PATCH", "PUT"):
+    if method == "PATCH":
         return _patch_group(event, group_id)
+    if method == "PUT":
+        # A PUT body is a Group resource, not a PatchOp. Routing it into the
+        # PatchOp parser made every call 400, so the verb is refused explicitly
+        # rather than appearing to be supported.
+        raise scim.ScimError(
+            405,
+            "PUT is not supported on /Groups. Send membership changes as "
+            "PATCH /Groups/{id} with a PatchOp body.",
+        )
     if method == "DELETE":
         raise scim.ScimError(
             403,
@@ -427,6 +439,18 @@ def _fold_member_operations(operations, profile_id):
         identifiers = scim.member_ids(operation)
         op = operation["op"]
 
+        # An operation that supplied members but yielded none is unparseable, not
+        # a request to clear the collection. Treating the two alike turned a
+        # targeted removal into a group wipe.
+        if op != "replace" and scim.carries_member_value(operation) and not identifiers:
+            raise scim.ScimError(
+                400,
+                "Could not read any member from this operation. Send members as "
+                '{"op":"remove","path":"members","value":[{"value":"<userId>"}]}, '
+                "or omit 'value' entirely to clear the whole collection.",
+                scim_type="invalidValue",
+            )
+
         if op == "add":
             for member in identifiers:
                 intents[member] = "add"
@@ -444,7 +468,13 @@ def _fold_member_operations(operations, profile_id):
 
 
 def _apply_collection_operation(intents, op, identifiers, members_before, profile_id):
-    """Fold a whole-collection ``remove`` or ``replace`` into per-member intents."""
+    """Fold a whole-collection ``remove`` or ``replace`` into per-member intents.
+
+    A whole-collection operation defines the final set, so it discards every
+    earlier per-member intent. Without this, an ``add`` of a non-member ahead of a
+    ``replace`` survived and the member joined a group the replace excluded.
+    """
+    intents.clear()
     if op == "remove":
         # RFC 7644 section 3.5.2.2: a remove with no value clears the attribute,
         # so this means "remove every current member". An identity provider sends
@@ -470,10 +500,7 @@ def _apply_collection_operation(intents, op, identifiers, members_before, profil
         intents[member] = "add"
     for member in sorted(members_before - wanted):
         intents[member] = "remove"
-    # Members that should stay need no write, and a replace supersedes any earlier
-    # operation that named them.
-    for member in members_before & wanted:
-        intents.pop(member, None)
+    # Members already in both sets need no write at all.
 
 
 def _patch_group(event, group_id):
@@ -582,18 +609,49 @@ def _entitlement_names(payload, required=True):
     return names
 
 
-def _entitlements_from_operations(operations):
-    """Pull an entitlements replacement out of a user PatchOp, if it carries one."""
+def _entitlements_from_operations(operations, current_names):
+    """Fold entitlement operations onto the user's current security profiles.
+
+    RFC 7644 applies operations in order and ``op`` decides the effect: ``add``
+    grants, ``remove`` revokes, ``replace`` defines the whole set. Treating every
+    operation as a whole-set replace made a revocation a silent no-op (the value
+    lives in the path for ``entitlements[value eq "X"]``, so the resolved set came
+    back empty and was discarded) and made an ``add`` strip every profile it did
+    not name.
+
+    Returns the resulting names, or ``None`` when no operation addressed
+    entitlements.
+    """
     resolved = None
     for operation in operations:
-        path = (operation.get("path") or "").strip().lower()
-        value = operation.get("value")
-        if path.startswith("entitlements"):
-            resolved = _multi_valued(value)
-        elif isinstance(value, dict):
-            for key, candidate in value.items():
-                if key.lower() == "entitlements":
-                    resolved = _multi_valued(candidate)
+        if not scim.targets_attribute(operation, "entitlements"):
+            continue
+        named = scim.entitlement_names(operation)
+        op = operation["op"]
+
+        if op == "replace":
+            # A replace defines the whole set and supersedes anything before it.
+            resolved = named
+            continue
+
+        if not named:
+            raise scim.ScimError(
+                400,
+                "Could not read any entitlement from this operation. Name the "
+                'security profiles, for example {"op":"add","path":"entitlements",'
+                '"value":["Agent"]}.',
+                scim_type="invalidValue",
+            )
+
+        working = list(current_names if resolved is None else resolved)
+        if op == "add":
+            for name in named:
+                if name not in working:
+                    working.append(name)
+        else:
+            lowered = {name.casefold() for name in named}
+            working = [name for name in working if name.casefold() not in lowered]
+        resolved = working
     return resolved
 
 

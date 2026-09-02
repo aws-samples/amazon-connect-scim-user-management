@@ -79,7 +79,7 @@ We have provided with 3 Infrastructure as code options as part of this repositor
 | `GET`    | `/Groups/{id}`   | Read one group, including members |
 | `POST`   | `/Groups`        | Link an existing security profile to a pushed group |
 | `PATCH`  | `/Groups/{id}`   | Add, remove or replace group members |
-| `PUT`    | `/Groups/{id}`   | Replace group membership |
+| `PUT`    | `/Groups/{id}`   | Refused (HTTP 405) — send membership changes as `PATCH` |
 | `DELETE` | `/Groups/{id}`   | Refused (HTTP 403) — deleting a security profile is an IAM-authorised action |
 
 ### Resource mapping
@@ -105,7 +105,7 @@ Behaviours worth knowing:
 ### Pagination and limits
 
 * `count` is clamped to 100, so a client cannot request an unbounded response.
-* A single `PATCH /Groups/{id}` may change at most 250 memberships. Each change costs a `DescribeUser` plus an `UpdateUserSecurityProfiles`, and Amazon Connect throttles those at 2 requests per second, so a larger request would risk the 900-second function timeout. Exceeding it returns HTTP 400 rather than timing out part-way through.
+* A single `PATCH /Groups/{id}` may change at most 250 memberships, and exceeding that returns HTTP 400. Each change costs a `DescribeUser` plus an `UpdateUserSecurityProfiles`, and Amazon Connect throttles those at 2 requests per second, so the real ceiling is API Gateway's 29-second integration timeout — which no deployment currently configures, and which is well below what 250 changes can complete. Lambda timeouts also differ per deployment (CDK 900s, Terraform 600s, CloudFormation 30s). Harmonising these is an open item; until then keep membership batches small.
 * Amazon Connect's user-management quotas are **per AWS account per Region**, so multiple Connect instances in one account share them. The provisioning function uses adaptive boto3 retries to absorb throttling rather than surfacing it to the IdP as a provisioning failure.
 
 
@@ -131,7 +131,7 @@ and `npm install --package-lock-only && npm audit` if you need an audit.
 
 ### Deploy
 
-    $ cdk bootstrap aws://<INSERT_CONNECT_AWS_ACCOUNT>/<INSERT_REGION>
+    $ npx cdk bootstrap aws://<INSERT_CONNECT_AWS_ACCOUNT>/<INSERT_REGION>
     <builds S3 bucket for CDK to store files to perform deployment>
 
     $ npx cdk deploy ConnnectUserManagement --parameters connectinstanceid=<INSERT_AMAZON_CONNECT_INSTANCE_ID>
@@ -156,14 +156,16 @@ ids, so `connect_instance_id` is supplied as `connectinstanceid`.
 
 Note the following **Output** after the deployment completes:
 
-1. *IdP-API-Base-URL* - Base URL for the provisioning connection. For `okta` it includes the `userName` filter the SCIM 2.0 Test App uses to verify the connection; for `azure` it is the `/scim/v2` tenant URL.
-2. *IdP-API-Token-SSM-Parameter* - The Systems Manager parameter holding the bearer token. Read it with:
+1. *IdPAPIBaseURL* - Base URL for the provisioning connection. For `okta` it includes the `userName` filter the SCIM 2.0 Test App uses to verify the connection; for `azure` it is the `/scim/v2` tenant URL.
+2. *IdPAPITokenSSMParameter* - The Systems Manager parameter holding the bearer token. Read it with:
 
        $ aws ssm get-parameter --with-decryption \
            --name /connect/scim-integration/api-token \
            --query Parameter.Value --output text
 
-3. *IdP-API-Token-KMS-Key* - The customer-managed key encrypting that token.
+3. *IdPAPITokenKMSKey* - The customer-managed key encrypting that token.
+
+CloudFormation logical ids are alphanumeric, so CDK strips the hyphens from the construct names — these are the keys that appear in the console Outputs tab. The CloudFormation deployment emits `SCIMProvisioningOktaTenantURL` / `SCIMProvisioningAzureTenantURL` and `IdPAPITokenSSMParameter`; Terraform emits `Okta_Url` / `Azure_Url` and `APITokenSSMParameter`.
 
 ## CloudFormation
 
@@ -227,8 +229,8 @@ The SCIM solution Provisions 3 Lambda functions, pass the s3 bucket name and the
 
 Note the following **Output** after the deployment completes:
 
-1. *IdP-API-Base-URL* - Base URL for the SCIM 2.0 Test App (Header Auth) credentials to authorize provisioning users from the identity provider and the Connect instance.
-2. *IdP-API-Token-SSM-Parameter* - The AWS Systems Manager parameter store that has the API Token to configure in the SCIM application to communicate with the API Gateway.
+1. *SCIMProvisioningOktaTenantURL* (or *SCIMProvisioningAzureTenantURL*) - Base URL for the provisioning connection to configure in the identity provider.
+2. *IdPAPITokenSSMParameter* - The AWS Systems Manager parameter holding the API token to configure in the SCIM application.
 
 ## Terraform
 
@@ -265,7 +267,7 @@ Note the following **Output** after the deployment completes:
 ## Deploy the SCIM Solution
 
 * Create a directory and copy all the **.tf** files to the folder.
-* Create a file **dev.auto.tfvars** and pass the below values for the variable
+* Create a file **dev.auto.tfvars** and pass the below values. `main.tf` reads these as variables, so no file needs editing by hand.
 
 ### Variables
 
@@ -277,7 +279,7 @@ Note the following **Output** after the deployment completes:
     * stage_name              = (Stage name to be used for creation of API, default value is "dev")
     * swagger_file_path       = (Path of the swagger file that is used to deploy the api gateway)
     * IsAzureIdpType          = (bool value for Azure Idp type, default value is false)
-    * IsOktaIdpType           = (bool value for Okta Idp type, default value is false)
+    * IsOKTAIdpType           = (bool value for Okta Idp type, default value is false)
     * default_security_profile = (Security profile assigned when the IdP sends no entitlements, default value is "Agent")
     * api_token_length        = (Length of the generated SCIM API bearer token, 32-256, default 32)
 
@@ -291,8 +293,8 @@ Note the following **Output** after the deployment completes:
 
 Note the following **Output** after the deployment completes:
 
-1. *IdP-API-Base-URL* - Base URL for the SCIM 2.0 Test App (Header Auth) credentials to authorize provisioning users from the identity provider and the Connect instance.
-2. *IdP-API-Token-SSM-Parameter* - The AWS Systems Manager parameter Arn that has the API Token to configure in the SCIM application to communicate with the API Gateway.
+1. *Okta_Url* (or *Azure_Url*) - Base URL for the provisioning connection to configure in the identity provider.
+2. *APITokenSSMParameter* - The AWS Systems Manager parameter ARN holding the API token to configure in the SCIM application.
 
 **Important**: This is for demo purposes and the API token should be provisioned and stored in accordance with credential management standards of the environment.
 
@@ -325,8 +327,8 @@ Once the SCIM Solution has successfully deployed based on any one of the above I
 2. Select **Configure API Integration** and select **Enable API integration**
 3. Enter in the following information for the API integration:
 
-* Base URL: Enter in the API Gateway URL output **OktaAPIBaseURL** from the CloudFormation template (e.g. <<https://<API_GATEWAY_ID>.execute-api>>.<REGION>.amazonaws.com/dev/Users?filter=userName%20eq%20%22test.user)
-* API Token: Enter in the bearer token value found in the AWS Systems Manager parameter ARN listed in **OktaAPITokenSSMParameter**. The bearer token will be a 32 alphanumeric value (e.g. 123abc456def789ghi101jklexamples)
+* Base URL: Enter the API Gateway URL from your deployment's base-URL output — **IdPAPIBaseURL** (CDK), **SCIMProvisioningOktaTenantURL** (CloudFormation) or **Okta_Url** (Terraform) (e.g. <<https://<API_GATEWAY_ID>.execute-api>>.<REGION>.amazonaws.com/dev/Users?filter=userName%20eq%20%22test.user)
+* API Token: Enter the bearer token from the Systems Manager parameter named by your deployment's token output — **IdPAPITokenSSMParameter** (CDK, CloudFormation) or **APITokenSSMParameter** (Terraform). The bearer token will be a 32 alphanumeric value (e.g. 123abc456def789ghi101jklexamples)
 
 4. Once the information is entered, select **Test API Credentials**
 
@@ -468,16 +470,16 @@ instructions for the CDK toolkit on how to execute this program.
 
 After building your TypeScript code, you will be able to run the CDK toolkits commands as usual:
 
-    $ cdk ls
+    $ npx cdk ls
     <list all stacks in this program>
 
-    $ cdk synth
+    $ npx cdk synth
     <generates and outputs cloudformation template>
 
-    $ cdk deploy
+    $ npx cdk deploy
     <deploys stack to your account>
 
-    $ cdk diff
+    $ npx cdk diff
     <shows diff against deployed stack>
 
 ## Development
@@ -507,7 +509,7 @@ The CDK app and the Lambda handlers are tested separately.
 
 ### Keeping the three deployments in step
 
-`cdk_source/lambdas` is the canonical handler source. The CloudFormation and Terraform trees hold byte-identical copies, because each deployment packages its own Lambda artifacts. `tests/unit/test_handler_copies.py` compares every copy against the canonical version and fails on any difference, so a fix cannot land in one deployment and be forgotten in the others. After changing a handler, copy it across and re-run the suite.
+`cdk_source/lambdas` is the canonical handler source. The CloudFormation and Terraform trees hold byte-identical copies, because each deployment packages its own Lambda artifacts. `tests/unit/test_handler_copies.py` compares every copy against the canonical version and fails on any difference. After changing a handler, copy it across and re-run the suite. Note that this repository has no CI, so that guard only fires when the suite is run locally — run it before opening a pull request.
 
 The Python tests run against an in-memory Amazon Connect fake rather than mocking boto3 calls in order. The fake deliberately models the `SearchUsers` index lag: with an instantly-consistent fake, a handler that reads membership back through `SearchUsers` immediately after a write passes its tests and reports empty membership in production.
 

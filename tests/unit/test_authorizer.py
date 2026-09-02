@@ -1,5 +1,6 @@
 """Tests for the API Gateway token authorizer."""
 
+import logging
 import secrets
 import string
 import time
@@ -80,12 +81,13 @@ class TestAuthorization:
         [
             "",
             "wrong-token",
-            # Regression: a non-matching token used to index past the end of a
-            # split list, so every rejection surfaced as an unhandled 500.
-            "nope",
             VALID_TOKEN[:-1],
             VALID_TOKEN + "x",
             "Bearer ",
+            # Non-ASCII: secrets.compare_digest rejects str outside ASCII, so this
+            # raised TypeError and surfaced as a 500 instead of a 401.
+            "tökén",
+            "Bearer \u5bc6\u7801",
         ],
     )
     def test_invalid_token_is_unauthorized(self, ssm, token):
@@ -99,6 +101,21 @@ class TestAuthorization:
     def test_parameter_is_read_with_decryption(self, ssm):
         authorize(VALID_TOKEN)
         assert ssm.calls[0]["WithDecryption"] is True
+
+    def test_the_token_is_never_logged(self, ssm, caplog):
+        # The published version logged it outright:
+        #   LOGGER.info("Client token: " + event['authorizationToken'])
+        # Nothing guarded that here, while the SCIM handler and custom resource
+        # both had the equivalent assertion.
+        with caplog.at_level(logging.INFO):
+            authorize(f"Bearer {VALID_TOKEN}")
+        assert VALID_TOKEN not in caplog.text
+        assert "Client token" not in caplog.text
+
+    def test_a_rejected_token_is_not_logged_either(self, ssm, caplog):
+        with caplog.at_level(logging.INFO), pytest.raises(Exception, match="Unauthorized"):
+            authorize("Bearer some-wrong-but-still-secret-value")
+        assert "some-wrong-but-still-secret-value" not in caplog.text
 
 
 class TestPolicyScope:

@@ -43,6 +43,11 @@ Metadata:
 Parameters:
   AmazonConnectInstanceId:
     Type: String
+    # This value is interpolated into the provisioning role's resource ARNs, so an
+    # unconstrained string (e.g. "*") would widen the role to every Connect
+    # instance in the account.
+    AllowedPattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    ConstraintDescription: Must be an Amazon Connect instance UUID.
   ApiKeyLength:
     Type: Number
     Default: 32

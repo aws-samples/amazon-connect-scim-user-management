@@ -27,10 +27,15 @@ ENTERPRISE_USER_SCHEMA = "urn:ietf:params:scim:schemas:extension:enterprise:2.0:
 MAX_PAGE_SIZE = 100
 DEFAULT_PAGE_SIZE = 100
 
-# Each membership change costs a DescribeUser plus an UpdateUserSecurityProfiles.
-# Amazon Connect throttles these at 2 requests per second, and the function has a
-# 900 second timeout, so roughly 900 changes is the hard ceiling. This bound keeps
-# well inside it and fails fast with an explanation instead of timing out.
+# Each membership change costs a DescribeUser plus an UpdateUserSecurityProfiles,
+# and Amazon Connect throttles those at 2 requests per second. The binding
+# constraint is API Gateway's 29 second integration timeout, which every
+# deployment inherits because none of them configure one -- past that the caller
+# has a 504 while the function keeps mutating users. Lambda timeouts differ per
+# deployment (CDK 900s, Terraform 600s, CloudFormation 30s), so they are not the
+# ceiling to reason from. This bound fails fast with an explanation rather than
+# timing out, but it is above what 29 seconds can actually complete; see the
+# open item on harmonising the timeouts.
 MAX_MEMBERSHIP_CHANGES = 250
 
 # ``<attr> eq "<value>"`` is the only comparison Okta and Entra ID emit for
@@ -39,6 +44,9 @@ _FILTER_TERM = re.compile(
     r'(?P<attr>[\w.:$-]+)\s+eq\s+"(?P<value>[^"]*)"',
     re.IGNORECASE,
 )
+
+# A members path that names specific members, e.g. members[value eq "abc"].
+_MEMBER_PATH_FILTER = re.compile(r'\[\s*[\w.]+\s+eq\s+"', re.IGNORECASE)
 
 
 class ScimError(Exception):
@@ -208,47 +216,95 @@ def parse_patch_operations(body):
     return normalised
 
 
-def member_ids(operation):
-    """Extract the member identifiers referenced by a group PatchOp operation.
+def carries_member_value(operation):
+    """True when the operation supplies members, whatever shape it uses.
 
-    Accepts every shape providers use in practice::
-
-        {"op": "add", "path": "members", "value": [{"value": "<id>"}]}
-        {"op": "add", "path": "members", "value": {"value": "<id>"}}
-        {"op": "add", "path": "members", "value": "<id>"}
-        {"op": "remove", "path": "members[value eq \\"<id>\\"]"}
+    This is what separates "clear the whole collection" from "act on the members
+    I named". RFC 7644 section 3.5.2.2 gives a ``remove`` with no value the former
+    meaning, so a valueless remove must reach the clear-all path -- but an
+    operation that *did* supply members and simply could not be parsed must not,
+    or a targeted removal silently empties the group.
     """
-    identifiers = []
+    # Only a genuinely absent value means "clear the collection". An empty value
+    # ({}, [], "") is ambiguous, and the destructive reading should require the
+    # unambiguous form -- so an empty one counts as supplied and will be refused
+    # once extraction yields nothing. parse_patch_operations normalises an absent
+    # value to None, which is what distinguishes the two here.
+    if operation.get("value") is not None:
+        return True
+    # An id can also arrive in a value-path filter, e.g. members[value eq "x"].
+    return bool(_MEMBER_PATH_FILTER.search(operation.get("path") or ""))
 
-    # An id embedded in a value-path filter, e.g. members[value eq "abc"].
+
+def carries_value(operation):
+    """True when the operation supplies a value in any shape. See above."""
+    return carries_member_value(operation)
+
+
+def _referenced_values(operation, attribute):
+    """Extract the values a PatchOp operation references for a multi-valued attribute.
+
+    Providers send five shapes, and all five have to work or a change is silently
+    dropped::
+
+        {"path": "<attr>", "value": [{"value": "<v>"}]}   list of complex values
+        {"path": "<attr>", "value": {"value": "<v>"}}     single complex value
+        {"path": "<attr>", "value": "<v>"}                bare string
+        {"path": "<attr>[value eq \"<v>\"]"}                value-path filter
+        {"value": {"<attr>": [{"value": "<v>"}]}}         pathless, target in value
+
+    Members and entitlements share this because they are the same SCIM construct;
+    handling them in one place is what keeps a fix to one from missing the other.
+    """
+    values = []
     path = operation.get("path") or ""
+
+    # A value carried in a value-path filter, e.g. members[value eq "abc"].
     for match in _FILTER_TERM.finditer(path):
-        if match.group("attr").lower() in ("value", "members.value"):
-            identifiers.append(match.group("value"))
+        if match.group("attr").lower() in ("value", f"{attribute}.value", "display"):
+            values.append(match.group("value"))
 
     value = operation.get("value")
+    # Pathless form: unwrap value[<attribute>] before looking for values.
+    if not path.strip() and isinstance(value, dict) and attribute in value:
+        value = value[attribute]
+
     candidates = value if isinstance(value, list) else [value]
     for candidate in candidates:
         if isinstance(candidate, dict):
-            member = candidate.get("value") or candidate.get("id")
-            if member:
-                identifiers.append(str(member))
+            found = candidate.get("value") or candidate.get("id") or candidate.get("display")
+            if found:
+                values.append(str(found))
         elif isinstance(candidate, str) and candidate:
-            identifiers.append(candidate)
+            values.append(candidate)
 
     # Preserve order while removing duplicates.
-    return list(dict.fromkeys(identifiers))
+    return list(dict.fromkeys(values))
+
+
+def member_ids(operation):
+    """Extract the member identifiers a group PatchOp operation references."""
+    return _referenced_values(operation, "members")
+
+
+def entitlement_names(operation):
+    """Extract the security profile names a user PatchOp operation references."""
+    return _referenced_values(operation, "entitlements")
+
+
+def targets_attribute(operation, attribute):
+    """True when the operation acts on the named multi-valued attribute."""
+    path = (operation.get("path") or "").strip()
+    if not path:
+        # A pathless op carries its target in the value object.
+        value = operation.get("value")
+        return isinstance(value, dict) and attribute in value
+    return path.lower().startswith(attribute)
 
 
 def targets_members(operation):
     """True when a group PatchOp operation acts on the ``members`` attribute."""
-    path = (operation.get("path") or "").strip()
-    if not path:
-        # A pathless op carries its target in the value object, e.g.
-        # {"op": "add", "value": {"members": [...]}}.
-        value = operation.get("value")
-        return isinstance(value, dict) and "members" in value
-    return path.lower().startswith("members")
+    return targets_attribute(operation, "members")
 
 
 def active_flag(operations):
@@ -276,7 +332,13 @@ def active_flag(operations):
 
 
 def _coerce_bool(value):
-    """Coerce the assorted truthy/falsey encodings providers send into a bool."""
+    """Coerce the truthy/falsey encodings providers send into a bool.
+
+    Raises :class:`ScimError` when an ``active`` value is present but not
+    recognised. Returning ``None`` here would make it indistinguishable from
+    "no operation addressed active", and the caller would treat a deactivation it
+    could not read as a no-op and answer 200.
+    """
     if isinstance(value, bool):
         return value
     if isinstance(value, str):
@@ -285,4 +347,9 @@ def _coerce_bool(value):
             return True
         if normalised in ("false", "no", "0"):
             return False
-    return None
+    raise ScimError(
+        400,
+        f"Unsupported value for 'active': {value!r}. Expected a boolean or one of "
+        "true/false/yes/no/1/0.",
+        scim_type="invalidValue",
+    )

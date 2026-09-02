@@ -28,26 +28,33 @@ a live Amazon Connect instance.
     addressable as a SCIM Group whose members are the users holding that profile,
     so membership can be synchronised with `PATCH /Groups/{id}` instead of
     resending whole user records. `GET /Groups`, `GET /Groups/{id}`,
-    `POST /Groups` (link an existing profile) and `PATCH`/`PUT /Groups/{id}` are
-    supported. `DELETE /Groups/{id}` is refused, because deleting a security
-    profile is an IAM-authorised action rather than a SCIM one.
+    `POST /Groups` (link an existing profile) and `PATCH /Groups/{id}` are
+    supported. `PUT /Groups/{id}` is refused with HTTP 405 -- a PUT body is a Group
+    resource rather than a PatchOp, and routing it into the PatchOp parser made
+    every call fail with a misleading 400. `DELETE /Groups/{id}` is refused
+    because deleting a security profile is an IAM-authorised action, not a SCIM
+    one.
 -   **Pagination** per RFC 7644 section 3.4.2.4 -- `startIndex`/`count` in the
     request, a real `totalResults` in the response.
 -   `DELETE /Users/{id}`, and SCIM-conformant error responses
     (`urn:ietf:params:scim:api:messages:2.0:Error` with `scimType`) in place of
     unhandled exceptions surfacing as HTTP 502.
--   Test suite: 204 Python tests and 35 CDK assertion tests, where there had been
-    one commented-out stub. Two deliberate choices in there: the Amazon Connect
+-   Test suite: 242 Python tests and 38 CDK assertion tests. The upstream tree
+    carried no test file at all. Two deliberate choices in there: the Amazon Connect
     fake models the `SearchUsers` index lag, because an instantly-consistent fake
     hides a real class of bug; and `tests/unit/test_handler_copies.py` compares
     every per-deployment copy of the handler modules against the canonical
-    `cdk_source/lambdas` version and fails on any byte difference, so a fix cannot
-    land in one deployment and be forgotten in the others.
+    `cdk_source/lambdas` version and fails on any byte difference. Note that the
+    repository has no CI, so that guard only fires when someone runs the suite
+    locally -- wiring it into a workflow is an open item.
 -   cdk-nag acknowledgements with a written justification per rule. cdk-nag was
     already present but had no suppressions, so `cdk synth` reported findings with
     no recorded position on any of them.
--   API Gateway access logging, and a dedicated log group per Lambda with explicit
-    retention.
+-   API Gateway access logging with a one-year retention log group in all three
+    deployments, and a log format that omits the caller and every header so the
+    bearer token cannot reach it. The solution Lambdas still use implicit log
+    groups, which never expire -- adding managed log groups for them is an open
+    item.
 -   A default security profile parameter for the profile assigned when the IdP
     sends no `entitlements`, in all three deployments, plus `api_token_length` in
     Terraform.
@@ -158,7 +165,8 @@ a live Amazon Connect instance.
     `default` was a valid bearer token. The parameter is now created only by the
     custom resource, so until it succeeds there is no token and the authorizer
     denies every request.
--   **Scoped the CDK authorizer's IAM policy from 24 actions to 2.** It granted
+-   **Scoped the CDK authorizer's IAM policy from 13 actions to 2.** Two of the 13
+    were service-wide wildcards (`ssm:*`, `ec2messages:*`). It granted
     `ssm:*`, `ec2messages:*`, `ds:CreateComputer`, `ds:DescribeDirectories`,
     `cloudwatch:PutMetricData`, `ec2:DescribeInstanceStatus`, the four
     `ssmmessages:*` channel actions and three `iam:*ServiceLinkedRole` actions,
@@ -173,6 +181,78 @@ a live Amazon Connect instance.
 -   `npm audit`: 0 vulnerabilities. `cfn-lint` findings on the CloudFormation
     template: 6 → 3, with none introduced.
 
+### Fixed in review
+
+A pre-merge review of this branch found defects in the new code, fixed here:
+
+-   **A malformed targeted removal wiped the whole group.** `scim.targets_members`
+    accepted the pathless form `{"op":"remove","value":{"members":[...]}}` while
+    `scim.member_ids` could not read it, so extraction returned nothing and the
+    operation fell into the clear-all branch. Member and entitlement extraction now
+    share one implementation that handles all five shapes providers send, and an
+    operation that supplies a value which yields no members is refused with HTTP
+    400 rather than being read as "clear the collection". Only a genuinely absent
+    value still means clear-all.
+-   **Entitlement operations ignored `op`.** Every one was folded as a whole-set
+    replace, so a `remove` of one profile resolved to an empty set and was
+    discarded (HTTP 200, nothing revoked) and an `add` of one profile silently
+    stripped the others. Operations now fold in order against the user's current
+    profiles, and a change that would leave a user with no security profile is
+    refused instead of ignored.
+-   **A whole-collection operation did not supersede earlier per-member ones**, so
+    an `add` of a non-member ahead of a `replace` survived and that member joined a
+    group the replace excluded.
+-   **An unparseable `active` value was a silent no-op.** `active_flag` returned
+    `None` both for "no operation addressed `active`" and for "addressed it with a
+    value I cannot read", so a deactivation the handler did not understand returned
+    200 and left the user active. Unrecognised values now return HTTP 400.
+-   **A non-ASCII bearer token returned 500 instead of 401.**
+    `secrets.compare_digest` rejects `str` outside ASCII; both sides are now
+    encoded first.
+-   **`PUT /Groups/{id}` returned 400 on every call** while three documents listed
+    it as supported. The verb is refused with HTTP 405 and the documentation
+    corrected.
+-   **The Connect instance id was unvalidated in CloudFormation and Terraform.** It
+    is interpolated into the provisioning role's resource ARNs, so `*` would have
+    granted user administration over every Connect instance in the account. Both
+    now enforce the UUID pattern the CDK already did, in Terraform at both the root
+    and module boundary.
+-   **Terraform's `main.tf` hardcoded placeholder inputs**, so the `dev.auto.tfvars`
+    workflow the README documents never drove them. It now reads variables.
+-   Guards that could not fail: the `ServiceToken` test asserted a tautology, the
+    instance-id test accepted any pattern, the stale-code gate passed when its glob
+    matched nothing, the authorizer had no assertion that it never logs the token,
+    and the test fixture put the CloudFormation tree ahead of `cdk_source` on
+    `sys.path` so the canonical `api_token` module was never executed. The Connect
+    fake also returned every user for an unrecognised `SearchUsers` field, ignored
+    `ComparisonType`, and made a just-created user instantly searchable despite
+    modelling index lag.
+-   The CDK stage had no X-Ray tracing while the other two deployments did, and a
+    cdk-nag `AwsSolutions-APIG4` acknowledgement matched none of the nine findings
+    the pack actually produces.
+
+### Open items
+
+Deferred deliberately, each needing a decision rather than a mechanical fix:
+
+-   **In-place upgrade from 1.0.0** (see the migration note below). Fixing it means
+    scoping the parameter name per stack, which changes the operator contract.
+-   **Lambda timeouts diverge** (CDK 900s, Terraform 600s, CloudFormation 30s) and
+    no deployment sets an API Gateway integration timeout, so all three inherit the
+    29-second default. Harmonising below 29s cuts the membership-change ceiling
+    substantially.
+-   **`GET /Users` issues 2N+1 Amazon Connect calls** — a `DescribeUser` plus a
+    security-profile lookup per listed user — so a default-size page cannot
+    complete inside the integration timeout. Fixing it means sourcing the page from
+    `SearchUsers`, trading strong consistency for index consistency on that read.
+-   **Terraform creates no API Gateway CloudWatch role**, so its access logging
+    depends on an account-wide setting the other two deployments create.
+    `aws_api_gateway_account` is an account-level singleton, so adding it needs a
+    decision about multi-stack ownership.
+-   **No CI.** Nothing in the repository runs the test suites, `cfn-lint`,
+    `cdk synth` or `terraform validate`.
+-   **The solution Lambdas use implicit log groups**, which never expire.
+
 ### Migration notes
 
 -   **The Lambda packaging for CloudFormation and Terraform has changed.** The
@@ -180,10 +260,16 @@ a live Amazon Connect instance.
     `user_management_lambda.py`, `handler_core.py`, `connect_directory.py` and
     `scim.py` at the archive root. A zip containing only the entry point fails at
     import with `No module named 'handler_core'`.
--   This release replaces the API Gateway stage and the token parameter, so
-    redeploying issues a **new bearer token**. Read it with
+-   **A fresh deployment** writes a new bearer token. Read it with
     `aws ssm get-parameter --with-decryption --name /connect/scim-integration/api-token`
-    and update the value in the identity provider's provisioning settings.
+    and enter it in the identity provider's provisioning settings.
+-   **An in-place upgrade from 1.0.0 is not yet supported.** The previous release
+    owned the token parameter as a template resource; this one has its custom
+    resource create it as a SecureString. On `update-stack` CloudFormation deletes
+    the old parameter and the custom resource is not re-invoked, leaving no token
+    and a SCIM endpoint that returns 500 for every request. Deploy this release as
+    a new stack, or delete the parameter and the previous stack first. A fix is
+    tracked as an open item.
 -   The `entitlements` attribute is returned as a multi-valued complex attribute
     (`[{"value": "Agent"}]`) rather than a list of plain strings. Both forms are
     accepted on input.

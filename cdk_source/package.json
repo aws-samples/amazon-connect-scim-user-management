@@ -10,7 +10,7 @@
     "test": "jest",
     "cdk": "cdk"
   },
-  "//": "Dependencies are pinned to exact versions and package-lock.json is committed, so every install resolves the same tree. Bump deliberately, then re-run: npm ci && npx tsc --noEmit && npx jest && npx cdk synth.",
+  "//": "Direct dependencies are pinned to exact versions. No package-lock.json is committed, so npm ci and npm audit are unavailable and the transitive graph resolves at install time. Bump deliberately, then re-run: npm install && npx tsc --noEmit && npx jest && npx cdk synth. For an audit: npm install --package-lock-only && npm audit.",
   "devDependencies": {
     "@types/jest": "30.0.0",
     "@types/node": "26.4.0",

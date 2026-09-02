@@ -9,6 +9,7 @@ and which a fake can assert on directly.
 import copy
 import os
 import sys
+from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -135,6 +136,22 @@ class FakeConnect:
     def count(self, name):
         return self.call_names().count(name)
 
+    def assert_max_calls(self, limit):
+        """Fail when an operation issues more Connect calls than it should.
+
+        Amazon Connect throttles the user-management APIs at 2 requests per second
+        and API Gateway cuts the integration off at 29 seconds, so call volume is a
+        correctness property, not a performance nicety. Without a bound the suite
+        passes in milliseconds on request shapes that cannot complete in
+        production.
+        """
+        total = len(self.calls)
+        assert total <= limit, (
+            f"{total} Connect calls exceeds the budget of {limit}; "
+            f"at 2 requests/second that is ~{total / 2:.0f}s against a 29s "
+            f"integration timeout. Breakdown: {dict(Counter(self.call_names()))}"
+        )
+
     # -- paging ----------------------------------------------------------
 
     def _page(self, items, next_token, key):
@@ -205,6 +222,9 @@ class FakeConnect:
         user_id = self.add_user(Username, SecurityProfileIds)
         self.users[user_id]["IdentityInfo"] = IdentityInfo
         self.users[user_id]["RoutingProfileId"] = RoutingProfileId
+        # A user created through the API is not yet in the search index. add_user
+        # refreshes it because it represents pre-existing, long-indexed state.
+        self._search_index.pop(user_id, None)
         return {"UserId": user_id, "UserArn": self.users[user_id]["Arn"]}
 
     def delete_user(self, InstanceId, UserId):
@@ -237,18 +257,11 @@ class FakeConnect:
         return self._page(self.security_profiles, NextToken, "SecurityProfileSummaryList")
 
     def describe_security_profile(self, SecurityProfileId, InstanceId):
+        # connect:DescribeSecurityProfile is deliberately absent from the deployed
+        # provisioning policy, so a handler reaching for it must fail here too
+        # rather than pass the suite and get AccessDenied after deploy.
         self.calls.append(("describe_security_profile", {"Id": SecurityProfileId}))
-        self._check_instance(InstanceId)
-        for profile in self.security_profiles:
-            if profile["Id"] == SecurityProfileId:
-                return {
-                    "SecurityProfile": {
-                        "Id": profile["Id"],
-                        "SecurityProfileName": profile["Name"],
-                        "LastModifiedTime": profile["LastModifiedTime"],
-                    }
-                }
-        raise _client_error("ResourceNotFoundException", "DescribeSecurityProfile")
+        raise _client_error("AccessDeniedException", "DescribeSecurityProfile")
 
     def list_routing_profiles(self, InstanceId, MaxResults=None, NextToken=None):
         self.calls.append(("list_routing_profiles", {"NextToken": NextToken}))
@@ -261,16 +274,21 @@ class FakeConnect:
         condition = (SearchCriteria or {}).get("StringCondition") or {}
         field = condition.get("FieldName")
         value = condition.get("Value")
+        comparison = condition.get("ComparisonType")
+        # Real SearchUsers rejects an unrecognised FieldName and honours
+        # ComparisonType. Returning every user for an unknown field would let a
+        # mistyped field name pass as "the whole directory is in this group".
+        if field not in ("SecurityProfileId", "Username"):
+            raise _client_error("InvalidRequestException", "SearchUsers")
+        if comparison != "EXACT":
+            raise _client_error("InvalidRequestException", "SearchUsers")
         matched = []
         # Reads the lagging index, not current state.
         for user in self._search_index.values():
             if field == "SecurityProfileId":
                 if value in user["SecurityProfileIds"]:
                     matched.append(copy.deepcopy(user))
-            elif field == "Username":
-                if user["Username"] == value:
-                    matched.append(copy.deepcopy(user))
-            else:
+            elif user["Username"] == value:
                 matched.append(copy.deepcopy(user))
         return self._page(matched, NextToken, "Users")
 

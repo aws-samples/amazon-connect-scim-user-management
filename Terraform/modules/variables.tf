@@ -1,6 +1,13 @@
 variable "connect_instance_id" {
   type        = string
   description = "The Connect Instance Id for user management"
+
+  # Interpolated into the provisioning role's resource ARNs, so an unconstrained
+  # value ("*") would widen the role to every Connect instance in the account.
+  validation {
+    condition     = can(regex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", var.connect_instance_id))
+    error_message = "connect_instance_id must be an Amazon Connect instance UUID."
+  }
 }
 
 variable "IsOKTAIdpType" {

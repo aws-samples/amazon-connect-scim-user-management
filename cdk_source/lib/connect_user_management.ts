@@ -319,6 +319,9 @@ export class ConnnectUserManagement extends Stack {
       deployOptions: {
         stageName: 'dev',
         loggingLevel: MethodLoggingLevel.ERROR,
+        // CloudFormation and Terraform both enable X-Ray; without this the CDK
+        // deployment is the only one with no request traces.
+        tracingEnabled: true,
         // Data tracing writes full request and response bodies to CloudWatch,
         // which would include the bearer token and user attributes.
         dataTraceEnabled: false,

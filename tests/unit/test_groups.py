@@ -8,8 +8,11 @@ and whole-collection replace applied as a delta.
 import json
 
 import okta
+import pytest
 import scim
 from conftest import AGENT_PROFILE, QA_PROFILE, SUPERVISOR_PROFILE, api_event
+
+GROUP_SCHEMA = "urn:ietf:params:scim:schemas:core:2.0:Group"
 
 
 def call(method, path, body=None, query=None):
@@ -405,6 +408,102 @@ class TestPatchGroupOther:
         assert QA_PROFILE in connect.profile_ids_of(user_id)
         # The member was already correct, so no write was needed at all.
         assert connect.count("update_user_security_profiles") == 0
+
+
+class TestPathlessAndMalformedMemberOperations:
+    """The shapes that used to drop or over-apply a membership change.
+
+    `targets_members` accepted the pathless form while `member_ids` could not read
+    it, so a pathless add applied to nobody and a pathless remove naming ONE
+    member fell into the clear-all branch and stripped the profile from everyone.
+    """
+
+    def test_pathless_add_applies_to_the_named_member(self, connect):
+        user_id = connect.add_user("a@example.com", [AGENT_PROFILE])
+        status, body = call(
+            "PATCH",
+            f"Groups/{QA_PROFILE}",
+            patch_body([{"op": "add", "value": {"members": [{"value": user_id}]}}]),
+        )
+        assert status == 200
+        assert QA_PROFILE in connect.profile_ids_of(user_id)
+        assert {m["value"] for m in body["members"]} == {user_id}
+
+    def test_pathless_remove_removes_only_the_named_member(self, connect):
+        named = connect.add_user("named@example.com", [AGENT_PROFILE, QA_PROFILE])
+        other = connect.add_user("other@example.com", [AGENT_PROFILE, QA_PROFILE])
+        status, body = call(
+            "PATCH",
+            f"Groups/{QA_PROFILE}",
+            patch_body([{"op": "remove", "value": {"members": [{"value": named}]}}]),
+        )
+        assert status == 200
+        assert QA_PROFILE not in connect.profile_ids_of(named)
+        # The whole point: the unnamed member keeps the profile.
+        assert QA_PROFILE in connect.profile_ids_of(other)
+        assert {m["value"] for m in body["members"]} == {other}
+
+    @pytest.mark.parametrize(
+        "operation",
+        [
+            {"op": "remove", "path": "members", "value": [{}]},
+            {"op": "remove", "path": "members", "value": [{"value": ""}]},
+            {"op": "remove", "path": "members", "value": {}},
+            {"op": "add", "path": "members", "value": [{}]},
+        ],
+    )
+    def test_an_unreadable_member_operation_is_refused_not_treated_as_clear_all(
+        self, connect, operation
+    ):
+        # A value was supplied and could not be parsed. Falling through to the
+        # clear-all branch turned "remove this one" into "remove everyone".
+        keeper = connect.add_user("keeper@example.com", [AGENT_PROFILE, QA_PROFILE])
+        status, body = call("PATCH", f"Groups/{QA_PROFILE}", patch_body([operation]))
+        assert status == 400
+        assert body["scimType"] == "invalidValue"
+        assert QA_PROFILE in connect.profile_ids_of(keeper)
+        assert connect.count("update_user_security_profiles") == 0
+
+    def test_a_valueless_remove_still_clears_the_collection(self, connect):
+        # RFC 7644 3.5.2.2 -- this must keep working; only the unreadable case above
+        # is refused.
+        a = connect.add_user("a@example.com", [AGENT_PROFILE, QA_PROFILE])
+        b = connect.add_user("b@example.com", [AGENT_PROFILE, QA_PROFILE])
+        status, body = call(
+            "PATCH", f"Groups/{QA_PROFILE}", patch_body([{"op": "remove", "path": "members"}])
+        )
+        assert status == 200
+        assert body["members"] == []
+        assert QA_PROFILE not in connect.profile_ids_of(a)
+        assert QA_PROFILE not in connect.profile_ids_of(b)
+
+    def test_replace_supersedes_an_earlier_add_of_a_non_member(self, connect):
+        # The earlier add used to survive, so X joined a group the replace excluded.
+        x = connect.add_user("x@example.com", [AGENT_PROFILE])
+        y = connect.add_user("y@example.com", [AGENT_PROFILE])
+        status, body = call(
+            "PATCH",
+            f"Groups/{QA_PROFILE}",
+            patch_body(
+                [
+                    {"op": "add", "path": "members", "value": [{"value": x}]},
+                    {"op": "replace", "path": "members", "value": [{"value": y}]},
+                ]
+            ),
+        )
+        assert status == 200
+        assert QA_PROFILE not in connect.profile_ids_of(x)
+        assert QA_PROFILE in connect.profile_ids_of(y)
+        assert {m["value"] for m in body["members"]} == {y}
+
+    def test_put_on_groups_is_refused_rather_than_400ing_as_a_bad_patchop(self, connect):
+        status, body = call(
+            "PUT",
+            f"Groups/{QA_PROFILE}",
+            json.dumps({"schemas": [GROUP_SCHEMA], "displayName": "QualityAnalyst", "members": []}),
+        )
+        assert status == 405
+        assert "PATCH" in body["detail"]
 
 
 class TestStaleSearchIndexReconciliation:

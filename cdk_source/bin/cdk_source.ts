@@ -90,11 +90,6 @@ acknowledgeNagRules(stack, [
       'No WAF web ACL is attached. This is a reference implementation; the README documents attaching a WAF with an IP allow list for the identity provider’s egress ranges as a production hardening step.',
   },
   {
-    id: 'AwsSolutions-APIG4',
-    reason:
-      'The single ANY method is protected by a Lambda token authorizer that validates the IdP bearer token. cdk-nag does not recognise custom authorizers as authorization.',
-  },
-  {
     id: 'AwsSolutions-COG4',
     reason:
       'Authorization uses a Lambda token authorizer rather than a Cognito user pool, because the caller is an identity provider’s SCIM client presenting a bearer token, not an end user.',

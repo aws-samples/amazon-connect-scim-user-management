@@ -295,16 +295,18 @@ class TestUpdateUserEntitlements:
         assert status == 200
         assert connect.profile_ids_of(user_id) == [SUPERVISOR_PROFILE]
 
-    def test_put_with_empty_entitlements_leaves_profiles_alone(self, connect):
-        # Connect requires at least one security profile, so an empty set cannot
-        # be applied; it must not be sent as an empty list either.
+    def test_put_with_empty_entitlements_is_refused(self, connect):
+        # Amazon Connect requires at least one security profile, so an empty set
+        # cannot be applied. It is refused rather than ignored: answering 200 told
+        # the identity provider a change had been made that had not been.
         user_id = connect.add_user("a@example.com", [AGENT_PROFILE])
-        status, _ = call(
+        status, body = call(
             "PUT",
             f"Users/{user_id}",
             json.dumps({"userName": "a@example.com", "entitlements": []}),
         )
-        assert status == 200
+        assert status == 400
+        assert body["scimType"] == "invalidValue"
         assert connect.profile_ids_of(user_id) == [AGENT_PROFILE]
         assert connect.count("update_user_security_profiles") == 0
 
@@ -322,6 +324,128 @@ class TestUpdateUserEntitlements:
     def test_update_of_an_unknown_user_is_404(self, connect):
         status, _ = call("PUT", "Users/ghost", json.dumps({"entitlements": ["Agent"]}))
         assert status == 404
+
+
+class TestEntitlementOperationSemantics:
+    """`op` decides the effect. Ignoring it inverted both add and remove.
+
+    Every entitlements operation used to be folded as a whole-set replace, so a
+    `remove` of one profile resolved to an empty set and was discarded (200, nothing
+    revoked), and an `add` of one profile wrote only that profile, silently
+    stripping the rest.
+    """
+
+    def test_add_grants_without_revoking_what_the_user_already_has(self, connect):
+        user_id = connect.add_user("a@example.com", [AGENT_PROFILE])
+        status, body = call(
+            "PATCH",
+            f"Users/{user_id}",
+            patch_body([{"op": "add", "path": "entitlements", "value": ["QualityAnalyst"]}]),
+        )
+        assert status == 200
+        assert set(connect.profile_ids_of(user_id)) == {AGENT_PROFILE, QA_PROFILE}
+        assert {i["value"] for i in body["entitlements"]} == {"Agent", "QualityAnalyst"}
+
+    def test_remove_revokes_the_named_profile_and_keeps_the_rest(self, connect):
+        user_id = connect.add_user("a@example.com", [AGENT_PROFILE, QA_PROFILE])
+        status, _ = call(
+            "PATCH",
+            f"Users/{user_id}",
+            patch_body([{"op": "remove", "path": "entitlements", "value": ["QualityAnalyst"]}]),
+        )
+        assert status == 200
+        assert connect.profile_ids_of(user_id) == [AGENT_PROFILE]
+
+    def test_remove_via_a_value_path_filter(self, connect):
+        # The name lives in the path here, which is why the old code resolved an
+        # empty set and revoked nothing.
+        user_id = connect.add_user("a@example.com", [AGENT_PROFILE, QA_PROFILE])
+        status, _ = call(
+            "PATCH",
+            f"Users/{user_id}",
+            patch_body([{"op": "remove", "path": 'entitlements[value eq "QualityAnalyst"]'}]),
+        )
+        assert status == 200
+        assert connect.profile_ids_of(user_id) == [AGENT_PROFILE]
+
+    def test_replace_defines_the_whole_set(self, connect):
+        user_id = connect.add_user("a@example.com", [AGENT_PROFILE, QA_PROFILE])
+        status, _ = call(
+            "PATCH",
+            f"Users/{user_id}",
+            patch_body([{"op": "replace", "path": "entitlements", "value": ["Supervisor"]}]),
+        )
+        assert status == 200
+        assert connect.profile_ids_of(user_id) == [SUPERVISOR_PROFILE]
+
+    def test_operations_apply_in_order(self, connect):
+        user_id = connect.add_user("a@example.com", [AGENT_PROFILE])
+        status, _ = call(
+            "PATCH",
+            f"Users/{user_id}",
+            patch_body(
+                [
+                    {"op": "add", "path": "entitlements", "value": ["QualityAnalyst"]},
+                    {"op": "remove", "path": "entitlements", "value": ["Agent"]},
+                ]
+            ),
+        )
+        assert status == 200
+        assert connect.profile_ids_of(user_id) == [QA_PROFILE]
+
+    def test_removing_the_last_profile_is_refused(self, connect):
+        # Connect requires one, and answering 200 reported a revocation that had
+        # not happened.
+        user_id = connect.add_user("a@example.com", [AGENT_PROFILE])
+        status, body = call(
+            "PATCH",
+            f"Users/{user_id}",
+            patch_body([{"op": "remove", "path": "entitlements", "value": ["Agent"]}]),
+        )
+        assert status == 400
+        assert body["scimType"] == "invalidValue"
+        assert connect.profile_ids_of(user_id) == [AGENT_PROFILE]
+
+    def test_an_unreadable_entitlements_operation_is_refused(self, connect):
+        user_id = connect.add_user("a@example.com", [AGENT_PROFILE])
+        status, body = call(
+            "PATCH",
+            f"Users/{user_id}",
+            patch_body([{"op": "add", "path": "entitlements", "value": []}]),
+        )
+        assert status == 400
+        assert connect.count("update_user_security_profiles") == 0
+
+
+class TestUnparseableActiveValue:
+    """An `active` value the handler cannot read must not look like success.
+
+    `active_flag` returned None both for "no operation addressed active" and for
+    "addressed it with a value I cannot parse", so a deactivation the handler did
+    not understand returned 200 and left the user active.
+    """
+
+    @pytest.mark.parametrize("value", [0, 1, 2, "disabled", "", [], {}, None])
+    def test_an_unparseable_active_value_is_refused(self, connect, value):
+        user_id = connect.add_user("stay@example.com", [AGENT_PROFILE])
+        status, body = call(
+            "PATCH",
+            f"Users/{user_id}",
+            patch_body([{"op": "replace", "path": "active", "value": value}]),
+        )
+        assert status == 400, f"{value!r} silently did nothing"
+        assert body["scimType"] == "invalidValue"
+        assert user_id in connect.users
+
+    def test_a_patch_that_does_not_mention_active_is_unaffected(self, connect):
+        user_id = connect.add_user("stay@example.com", [AGENT_PROFILE])
+        status, _ = call(
+            "PATCH",
+            f"Users/{user_id}",
+            patch_body([{"op": "replace", "path": "name.givenName", "value": "X"}]),
+        )
+        assert status == 200
+        assert user_id in connect.users
 
 
 class TestRequestLogging:
