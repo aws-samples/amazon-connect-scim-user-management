@@ -23,6 +23,18 @@ for source_dir in ("user_management", "lambda_authorizer", "custom_resource"):
 # protocol than the CDK one, so both are imported and tested.
 sys.path.insert(0, str(LAMBDA_ROOT.parents[1] / "CloudFormation" / "lambdas" / "custom_resource"))
 
+# The handler modules construct their boto3 clients at import time, which needs a
+# region. Without this the suite passes on a machine that happens to have an AWS
+# region configured and fails at collection on one that does not -- which is what
+# it did the first time CI ran it. The dummy credentials are here so that a test
+# reaching AWS by mistake cannot do it with a real caller's permissions; every
+# client under test is replaced by the in-memory fake.
+os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
+os.environ.setdefault("AWS_REGION", "us-east-1")
+os.environ.setdefault("AWS_ACCESS_KEY_ID", "testing")
+os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "testing")
+os.environ.setdefault("AWS_SESSION_TOKEN", "testing")
+
 # The handler modules read their configuration at import time.
 os.environ.setdefault("INSTANCE_ID", "11111111-2222-3333-4444-555555555555")
 os.environ.setdefault("DEFAULT_ROUTING_PROFILE", "Basic Routing Profile")

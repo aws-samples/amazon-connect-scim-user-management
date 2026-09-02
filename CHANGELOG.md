@@ -269,6 +269,13 @@ is not the way the open item proposed:
     what makes the handler-copy drift guard an actual guard; previously it fired
     only if a contributor ran the suite locally. `requirements-dev.txt` now pins
     transitive dependencies as well, produced by freezing a clean resolution.
+
+    Its first run earned its place by failing: the handler modules construct their
+    boto3 clients at import, so the suite needed a region and had been silently
+    borrowing whichever one the contributor's own AWS config supplied. On a clean
+    machine it did not collect at all. `tests/unit/conftest.py` now sets the region
+    itself, along with dummy credentials so that a test reaching AWS by mistake
+    cannot do it with a real caller's permissions.
 -   **The solution Lambdas have managed log groups** with one-year retention in all
     three deployments, replacing implicit groups that never expired. A CDK test
     asserts every function references a log group defined by the template; the
